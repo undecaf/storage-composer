@@ -1,0 +1,154 @@
+#!/bin/sh
+
+# Set error timeouts for MD/RAID components
+# =========================================
+#
+# If a drive error timeout is longer than the storage driver timeout
+# then this may cause an MD/RAID to degrade needlessly and may eventually
+# lead to data loss, see these articles:
+#   http://strugglers.net/~andy/blog/2015/11/09/linux-software-raid-and-drive-timeouts/
+#   https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=780162
+#   https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=780207
+#
+# This script adjusts drive error and storage driver timeouts so that 
+# each storage driver timeout is longer than the corresponding drive
+# error timeout. For drives that do not support configurable error 
+# timeouts, the storage driver timeout is set to a fallback of 180s
+# which is assumed to be longer than any drive error timeout.
+# Log messages are written to the kernel log (dmesg).
+#
+# Usage:
+#   $0 <mdraid device>...
+#
+# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+#
+# This file is part of "StorageComposer".
+#
+# StorageComposer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# StorageComposer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with StorageComposer.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# ------------------------------ Configuration -----------------------------
+
+# File name of this script
+SCRIPTNAME=$(basename $0)
+
+# Logging device
+LOGGER=/dev/kmsg
+
+# Drive error timeout (in s, must be <= 25)
+DRIVE_TIMEOUT=7
+
+# Difference between storage driver and drive error timeout (in s)
+KERNEL_TIMEOUT_MARGIN=3
+
+# Device driver timeout (in s) if drive supports configurable error timeouts
+MIN_KERNEL_TIMEOUT=$(( DRIVE_TIMEOUT + KERNEL_TIMEOUT_MARGIN ))
+
+# Device driver timeout (in s) if drive does not support configurable error timeouts
+FALLBACK_KERNEL_TIMEOUT=180
+
+
+# --------------------------------------------------------------------------
+
+# Writes the specified message to the kerne log (dmesg).
+#
+# Arguments:
+#   $1     message
+#   $ARGS  command line arguments, become part of message header
+#
+log() {
+  echo "$SCRIPTNAME ($ARGS) $1" >>$LOGGER
+}
+
+
+# --------------------------------------------------------------------------
+
+# Reads the configurable error timeout of a drive (maximum of read and write
+# timeout) and prints it to stdout (in 1/10s). Prints 0 if both timeouts are
+# disabled. Does not print anything and returns 1 if the drive does not
+# support configurable error timeouts.
+#
+# Arguments:
+#   $1  drive (/dev/...)
+#
+read_drive_timeout() {
+  smartctl -l scterc $1 \
+    | awk -F ': *| [(]' -e \
+      'BEGIN { T=-1; } \
+       /(Read|Write):\s+[[:digit:]]+/ { if ($2>T) T=$2; } \
+       /(Read|Write):\s+Disabled/ { T=0; } \
+       END { if (T>=0) print T; else exit 1; }'
+}
+
+
+# --------------------------------------------------------------------------
+
+# Formats a time of centiseconds as a time in seconds and prints it to
+# stdout.
+#
+# Arguments:
+#   $1  time in centiseconds (1/10s)
+#
+format_10() {
+  local S=${1%?}
+  echo "${S:-0}.${1#${1%?}}s"
+}
+
+
+# ---------------------------- Script starts here --------------------------
+
+ARGS="$*"
+
+# Convert to units of 1/10s
+DRIVE_TIMEOUT_10=$(( DRIVE_TIMEOUT * 10 ))
+
+for D in $(/sbin/mdadm --detail $* | grep -o '/dev/sd[a-z]' | sort -u); do
+  # Convert partition to drive if necessary
+  [ $D != ${D%%[1-9]} ] && D=${D%%[1-9]}
+  KNAME=${D#/dev/}
+
+  # Get current drive error timeouts if the drive supports them
+  if TIMEOUT_10=$(read_drive_timeout $D); then
+    if [ "$TIMEOUT_10" != "$DRIVE_TIMEOUT_10" ]; then
+      # Set the desired drive timeouts if possible
+      smartctl -q errorsonly -l scterc,$DRIVE_TIMEOUT_10,$DRIVE_TIMEOUT_10 $D
+      ACTUAL_TIMEOUT_10=$(read_drive_timeout $D)
+      if [ "$ACTUAL_TIMEOUT_10" = "$DRIVE_TIMEOUT_10" ]; then
+        log "$D: drive error timeout was $(format_10 $TIMEOUT_10), set to ${DRIVE_TIMEOUT}.0s"
+      else
+        log "$D: drive error timeout at $(format_10 $TIMEOUT_10), unable to change"
+      fi
+    else
+      ACTUAL_TIMEOUT_10=$TIMEOUT_10
+      log "$D: drive error timeout already at ${DRIVE_TIMEOUT}.0s"
+    fi
+
+    # Make storage driver timeout longer than drive timeout, obey MIN_KERNEL_TIMEOUT
+    KERNEL_TIMEOUT=$(( ACTUAL_TIMEOUT_10 / 10 + KERNEL_TIMEOUT_MARGIN ))
+    [ $KERNEL_TIMEOUT -lt $MIN_KERNEL_TIMEOUT ] && KERNEL_TIMEOUT=$MIN_KERNEL_TIMEOUT
+    
+  else
+    # Drive does not support configurable error timeouts
+    log "$D: does not support configurable error timeouts"
+    KERNEL_TIMEOUT=$FALLBACK_KERNEL_TIMEOUT
+  fi
+
+  # Adjust storage driver timeout if necessary
+  if [ "$(cat /sys/block/$KNAME/device/timeout)" != $KERNEL_TIMEOUT ]; then
+    echo $KERNEL_TIMEOUT > /sys/block/$KNAME/device/timeout
+    log "$D: storage driver timeout set to ${KERNEL_TIMEOUT}.0s"
+  else
+    log "$D: storage driver timeout already at ${KERNEL_TIMEOUT}.0s"
+  fi
+done

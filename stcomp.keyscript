@@ -1,0 +1,564 @@
+#!/bin/sh
+
+# Print a LUKS key to stdout
+# ==========================
+#
+# The key is obtained either from user input or from a key file. This key
+# file may be GPG-encrypted or may reside on a LUKS-encrypted device or
+# partition.
+# Keys are cached between successive runs of this script. User interaction
+# happens through Plymouth, if available, or through the console.
+# Log messages are written to the kernel log (dmesg).
+# 
+# Usage:
+#   Intended to be invoked through /etc/crypttab. For each LUKS-encrypted
+#   device to unlock at boot-time, add to /etc/crypttab a line of the form
+#   (see also: man crypttab)
+#
+#   <target name>   <source device>   <auth-method>:<key file>    <options>
+#
+# where:
+#   <target name>  mapped device name to use for unlocked device
+#   <source dev>   device to unlock, or file that contains the encrypted
+#                  data, or UUID=<luks_uuid>
+#   <auth-method>  0: the user is prompted for a passphrase which will be 
+#                     used as LUKS key and cached for this passphrase group.
+#                  1: the user is prompted for a passphrase only if no LUKS 
+#                     key has been cached for this passphrase group.
+#                  2: unless a LUKS key has been cached for this key file
+#                     path, a key file is searched for on removable
+#                     USB/SD/MMC devices. Unencrypted devices are scanned
+#                     first, LUKS-encrypted devices are scanned afterwards.
+#                     The user is prompted for a passphrase for each
+#                     encrypted device until a device has been decrypted and
+#                     the key file has been found. Key file content is used
+#                     as LUKS key and cached for this key file path.
+#                  3: unless a LUKS key has been cached for this key file
+#                     path, a GPG-encrypted key file is searched for on 
+#                     removable unencrypted USB/SD/MMC devices. The user is
+#                     prompted for a passphrase for each such file until a
+#                     file has been decrypted. Key file content is used as 
+#                     LUKS key and cached for this key file path.
+#   <key file>     passphrase group or path to key file, relative to
+#                  device/partition mount point
+#   <options>      at minimum:
+#                     luks,keyscript=<initramfs path of this script>
+#
+# Exit code:
+#   0  if a LUKS key was printed and cached
+#   1  otherwise, causes this script to be run again by 
+#      /usr/share/initramfs-tools/scripts/local-top/cryptroot
+#
+# Environment:
+#   cryptsource    should contain <source dev> from /etc/crypttab entry,
+#                  only used for logging
+#
+# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+#
+# This file is part of "StorageComposer".
+#
+# StorageComposer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# StorageComposer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with StorageComposer.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# ------------------------------ Configuration -----------------------------
+
+# File name of this script
+SCRIPTNAME=$(basename $0)
+
+# Logging device
+LOGGER=/dev/kmsg
+
+# Temporary mount directory for block devices/partitions
+MNT=/mnt-keyscript
+
+# Decrypted LUKS block devices appear in /dev/mapper with this prefix
+MAPPER_PREFIX=keyscript-
+
+# Maximum number of passphrase attempts
+MAX_TRIES=3
+
+# Expiration time of saved LUKS key (in s)
+KEY_EXP=60
+
+# Plymouth available?
+PLYMOUTH=
+[ -x /bin/plymouth ] && /bin/plymouth --ping && PLYMOUTH=1
+
+# LUKS authorization method:
+#   0  passphrase, must be entered
+#   1  cached passphrase if possible
+#   2  plaintext key file
+#   3  encrypted key file
+AUTH_METHOD=
+
+
+# --------------------------------------------------------------------------
+
+# Writes the specified message to Plymouth or to stderr.
+#
+# Arguments:
+#   $1  message
+#
+msg() {
+  if [ -n "$PLYMOUTH" ]; then
+    /bin/plymouth message --text="$1"
+  else
+    echo "$1" 1>&2
+  fi
+}
+
+
+# --------------------------------------------------------------------------
+
+# Writes the specified message to the kerne log (dmesg).
+#
+# Arguments:
+#   $1            message
+#   $crypttarget  <target name> from crypttab entry, becomes part of the
+#                 message header
+log() {
+  echo "$SCRIPTNAME ($crypttarget): $1" >>$LOGGER
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints a message to stderr and terminates this script with the specified
+# exit code.
+#
+# Arguments:
+#   $1  error message
+#   $2  exit code (optional, defaults to 1)
+#
+die() {
+  local EXIT_CODE=1
+  [ -n "$2" ] && EXIT_CODE="$2"
+  echo "$SCRIPTNAME: ***** FATAL: $1 ******" 1>&2
+  exit $EXIT_CODE
+}
+
+
+# --------------------------------------------------------------------------
+
+# Reads a passphrase from Plymouth or from the console and prints it to 
+# stdout.
+#
+# Arguments:
+#   $1  prompt
+#
+read_pass() {
+  local PASS
+  local STTY_CFG
+
+  if [ -n "$PLYMOUTH" ]; then
+    PASS=$(/bin/plymouth ask-for-password --prompt="$1")
+  else
+    STTY_CFG=$(stty -g)
+    stty -echo
+    read -r -p "$1" PASS
+    stty $STTY_CFG
+    echo '' 1>&2
+  fi
+
+  echo -n "$PASS"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints a user-friendly description of a block device/partition to stdout.
+#
+# Arguments:
+#   $1  block device/partition (only for display if $3 is non-empty)
+#   $2  device type (USB/MMC) (for display)
+#   $3  block device from which to determine file system type, label etc.
+#       (optional, defaults to $1)
+#
+friendly_dev() {
+  local DEV=$1
+  [ -n "$3" ] && DEV=$3
+
+  local DEV_OR_PART=partition
+  [ $1 = ${1%%[1-9]} ] && DEV_OR_PART=device
+
+  local FS_TYPE=$(/sbin/blkid -s TYPE -o value $DEV)
+  [ "$FS_TYPE" ] && FS_TYPE=" $FS_TYPE"
+
+  local LABEL=$(/sbin/blkid -s LABEL -o value $DEV)
+  [ "$LABEL" ] && LABEL=", volume '${LABEL}'"
+
+  # Determine size
+  local SIZE=$(blockdev --getsize64 $DEV)
+  [ "$SIZE" ] || SIZE=0
+  local UNITS=' KMGTP'
+
+  while [ $SIZE -gt 10000 -a -n "$UNITS" ]; do
+    SIZE=$(( SIZE / 1000))
+    UNITS=${UNITS#?}
+  done
+
+  printf '%s %s %s (%d %cBytes%s%s)' \
+    "$2" "$DEV_OR_PART" "$1" "$SIZE" "$UNITS" "$FS_TYPE" "$LABEL"
+}
+
+
+# --------------------------------------------------------------------------
+
+# LUKS-decrypts the specified block device/partition and save the mapped
+# name to DECRYPTED_DEV.
+# If successful, this function returns 0, otherwise 1.
+#
+# Arguments:
+#   $1             block device/partition (/dev/sd* etc.)
+#   $AUTH_METHOD   LUKS authorization method (0..3)
+#   $KEY_FILE      path to key file (for display)
+#   $FRIENDLY_DEV  friendly block device name (for display)
+#
+# Calls:
+#   log, read_pass, push_cmd
+#
+decrypt_dev() {
+  local TRIES=$MAX_TRIES
+  local PASS
+  local MAPPER_BASE
+
+  # Check whether LUKS-encrypted
+  if /sbin/cryptsetup isLuks $1 1>&2; then
+    while [ $TRIES -gt 0 ]; do
+      # Request passphrase
+      PASS=$(read_pass "Looking for '$KEY_FILE': passphrase for $FRIENDLY_DEV, or empty to skip: ")
+
+      # Stop trying and fail if passphrase is empty
+      if [ -z "$PASS" ]; then
+        log "$1: LUKS-encrypted but skipped by user"
+        return 1
+      else
+        log "$1: passphrase entered"
+      fi
+
+      # Map decrypted block device/partition
+      MAPPER_BASE=$MAPPER_PREFIX$(basename $1)
+      if echo $PASS | /sbin/cryptsetup luksOpen $1 $MAPPER_BASE 1>&2; then
+        DECRYPTED_DEV=/dev/mapper/$MAPPER_BASE
+        log "$1: mapped as $DECRYPTED_DEV"
+        push_cmd "/sbin/cryptsetup luksClose $MAPPER_BASE" "closing $DECRYPTED_DEV"
+        return 0
+      fi
+
+      TRIES=$(($TRIES-1))
+    done
+  fi
+
+  # No a LUKS device, or decryption failed
+  return 1
+}
+
+
+# --------------------------------------------------------------------------
+
+# Saves the LUKS key from the specified file in the key ring and prints the
+# key ID to stdout. Prompts the user for a passphrase and decrypts the file
+# if necessary. Returns 0 if successful, otherwise returns 1.
+#
+# Arguments:
+#   $1            dirname of key file including trailing '/', or empty
+#   $2            basename of key file
+#   AUTH_METHOD   LUKS authorization method (0..3)
+#   $FRIENDLY_DEV friendly name of the device containing the key file
+#   $KEY_DESC     descriptor under which to save the key to the keyring
+#   $KEY_EXP      expiration time of saved key (in s)
+#
+# Calls:
+#   log, save_luks_key
+#
+save_key_file() {
+  local TRIES=$MAX_TRIES
+  local PASS
+
+  # Plaintext key file?
+  if [ "$AUTH_METHOD" = 2 ]; then
+    cat $1$2 | save_luks_key \
+      && log "$1$2: saved as LUKS key" \
+      && return 0
+
+  else
+    while [ $TRIES -gt 0 ]; do
+      # Request passphrase
+      PASS=$(read_pass "Passphrase for '$2' on $FRIENDLY_DEV, or empty to skip: ")
+
+      # Stop trying and fail if passphrase is empty
+      if [ -z "$PASS" ]; then
+        log "skipped by user"
+        return 1
+      fi
+
+      # Save decrypted key file as LUKS key
+      cat $1$2 | gpg --quiet --yes --passphrase "$PASS" --output - | save_luks_key \
+        && log "$1$2: decrypted and saved as LUKS key" \
+        && return 0
+
+      TRIES=$(($TRIES-1))
+    done
+  fi
+  
+  return 1
+}
+
+
+# --------------------------------------------------------------------------
+
+# Searches for a key file on USB/MMC devices, prints key file content to 
+# stdout, saves it in the keyring and exits. Searches either only on
+# LUKS-encrypted devices/partitions, or only on unencrypted
+# devices/partitions.
+#
+# Arguments:
+#   $1    if non empty, searches only on LUKS-encrypted devices/partitions;
+#         otherwise, searches only on unencrypted devices/partitions
+#   $MNT  temporary mount directory, must exist
+#
+# Calls:
+#    log, msg, push_cmd, decrypt_dev, friendly_dev, print_luks_key, 
+#    save_key_file
+#
+process_key_file() {
+  local DECRYPT
+
+  for BLK in /sys/block/sd* /sys/block/mmcblk*; do
+    # A trailing '*' means that no device was found for this wildcard
+    [ $BLK = ${BLK%%[*]} ] || continue
+
+    # USB/MMC device?
+    if [ -f $BLK/removable -a -f $BLK/dev ]; then
+      if [ "$(cat $BLK/removable)" = 1 ] && ls -l $BLK | grep -q 'usb'; then
+        DEV_TYPE='USB'
+        DEV_ROOT=/dev/$(basename $BLK)
+
+      elif ls -l $BLK | grep -q 'mmc'; then
+        DEV_TYPE='SD/MMC'
+        DEV_ROOT=/dev/$(basename $BLK)
+
+      else
+        # Neither USB nor MMC device
+        continue
+      fi
+    fi
+
+    # Decrypt device if searching on encrypted devices/partitions 
+    DECRYPT=
+    if [ -n "$1" ]; then
+      if decrypt_dev $DEV_ROOT; then
+        DEV_ROOT=$DECRYPTED_DEV
+        DEV_TYPE="encrypted $DEV_TYPE"
+      else
+        log "$DEV_ROOT: not LUKS-encrypted, or decryption failed"
+        DECRYPT=1
+      fi
+    fi
+
+    # Search for key file on device and on each partition
+    for DEV in ${DEV_ROOT}*; do
+      FS_TYPE=$(/sbin/blkid -s TYPE -o value $DEV)
+      FRIENDLY_DEV=$(friendly_dev $DEV "$DEV_TYPE")
+      
+      if [ -n "$FS_TYPE" ]; then
+        # Decrypt encrypted partitions of an unencrypted device
+        if [ -n "$DECRYPT" ]; then
+          if decrypt_dev $DEV; then
+            FRIENDLY_DEV=$(friendly_dev $DEV "encrypted $DEV_TYPE" $DECRYPTED_DEV)
+            DEV=$DECRYPTED_DEV
+          else
+            log "$DEV: skipped, not LUKS-encrypted, or decryption failed"
+            continue
+          fi
+        fi
+
+        # Mount partition and search it for key file
+        DEV_MNT=$MNT/$(basename $DEV)
+        mkdir -p $DEV_MNT
+        push_cmd "rmdir $DEV_MNT" "removing $DEV_MNT"
+
+        if mount $DEV $DEV_MNT -o ro >/dev/null 2>&1; then
+          log "$(mount | grep $DEV_MNT | sed -e 's/ on /: on /')"
+          push_cmd "umount $DEV_MNT" "unmounting $DEV_MNT"
+
+          if [ -f $DEV_MNT/$KEY_FILE ]; then
+            # Save the key in the keyring and print it to stdout
+            print_luks_key $(save_key_file $DEV_MNT/ $KEY_FILE)
+
+            msg "Using '$KEY_FILE' from $FRIENDLY_DEV"
+            exit 0
+
+          else
+            log "$DEV: '$KEY_FILE' not found"
+          fi
+        fi
+      fi
+    done
+  done
+
+}
+
+
+# --------------------------------------------------------------------------
+
+# Reads a LUKS key from stdin and saves this key to the keyring for usage
+# by print_luks_key(). The saved key is set to expire after KEY_EXP seconds.
+# Prints the key ID to stdout and returns 0 if successful, otherwise returns
+# 1.
+#
+# Arguments:
+#   $KEY_DESC  descriptor under which to save the key to the keyring
+#   $KEY_EXP   expiration time of saved key (in s)
+#   
+save_luks_key() {
+  local KEY_ID=$(keyctl padd user "$KEY_DESC" @u) 2>/dev/null \
+    && keyctl timeout "$KEY_ID" $KEY_EXP >/dev/null \
+    && echo -n $KEY_ID
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints the LUKS key saved in the keyring to stdout.
+#
+# Arguments:
+#   $1  ID of saved LUKS key
+#
+print_luks_key() {
+  keyctl pipe $1 2>/dev/null || die "could not pipe LUKS key, ID: $1"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Pushes a command and an optional debug message onto the command stack.
+#
+# Arguments:
+#   $1  command
+#   $2  debug message (optional)
+#
+push_cmd() {
+  CMDS_DBG="$CMDS_DBG":"$2"
+  CMDS="$CMDS":"$1"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Runs the commands on the command stack in reverse order and displays debug
+# messages.
+#
+# Arguments: none
+#
+run_cmds() {
+  while [ -n "$CMDS" ]; do
+    log "${CMDS_DBG##*:}"
+    ${CMDS##*:} 1>&2
+    CMDS_DBG="${CMDS_DBG%:*}"
+    CMDS="${CMDS%:*}"
+  done
+
+  unset CMDS
+  unset CMDS_DBG
+}
+
+
+# ---------------------------- Script starts here --------------------------
+
+log "unlocking $cryptsource, <auth-method>:<key file>='$1'"
+
+# Clean up on exit
+trap run_cmds EXIT
+
+# Process argument
+if [ -z "$1" -o "$1" = "none" ]; then
+  # No key file -- authorize by passphrase
+  KEY_FILE=
+  AUTH_METHOD=1
+
+else
+  # Key file prefixed by authorization method
+  KEY_FILE=${1##*:}
+  AUTH_METHOD=${1%%:*}
+fi
+
+# Descriptor of LUKS key in keyring
+KEY_DESC="keyscript:$KEY_FILE"
+
+# Get ID of saved LUKS key unless a passphrase must be entered
+KEY_ID=
+[ "$AUTH_METHOD" != 0 ] && KEY_ID=$(keyctl search @u user "$KEY_DESC" 2>/dev/null)
+
+if [ -n "$KEY_ID" ]; then
+  # Use saved LUKS key from the keyring
+  print_luks_key $KEY_ID
+
+  log "using LUKS key from keyring"
+  exit 0
+
+else
+  # Obtain the LUKS key by the specified authorization method
+  case "$AUTH_METHOD" in
+    0|1)
+      # Request a passphrase and save it to the keyring
+      print_luks_key $(read_pass 'Passphrase: ' | save_luks_key) \
+        && log "saved passphrase as LUKS key" \
+        && exit 0
+      ;;
+
+    2|3)
+      # Search for plaintext/encrypted key file in the file system
+      if [ -f $KEY_FILE ]; then
+        # Key file found in file system
+        log "found '$KEY_FILE' in initramfs"
+        FRIENDLY_DEV=initramfs
+
+        # Save the LUKS key in the keyring and print it to stdout
+        print_luks_key $(save_key_file '' $KEY_FILE)
+
+        msg "Using '$KEY_FILE' from initramfs"
+        exit 0
+      fi
+
+      # Load driver modules for USB/SD/MMC if necessary (must be added
+      # to /etc/initramfs-tools/modules if not included by default)
+      for M in usb_storage mmc_block sdhci sdhci_pci pcmcia_core; do
+        # Driver already loaded?
+        if ! cat /proc/modules | grep -qs "$M"; then
+          log "loading driver '$M'"
+          modprobe $M 1>&2 || log "could not load '$M'"
+        fi
+      done
+
+      # Provide/clean up temporary mount directory
+      mkdir -p $MNT
+      push_cmd "rmdir $MNT" "removing $MNT"
+
+      # Search for plaintext/encrypted key file on unencrypted removable USB/MMC devices/partitions
+      process_key_file ''
+
+      if [ "$AUTH_METHOD" = 2 ]; then
+        # Also search for plaintext-only key file on all encrypted removable USB/MMC devices
+        process_key_file 1
+      fi
+      ;;
+
+    *)
+      die "unknown authorization method: '$AUTH_METHOD'"
+      ;;
+  esac
+fi
+
+exit 1

@@ -1,0 +1,50 @@
+# Custom bcache udev rule for StorageComposer
+# ===========================================
+#
+# Replaces the standard bcache udev rule which may not perform
+# properly for RAID devices.
+#
+# Registers bcache devices as they come up, using helper script
+# /usr/local/sbin/bcache-helper to register caching and backing
+# devices and to attach backing devices to caches.
+#
+# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+#
+# This file is part of "StorageComposer".
+#
+# StorageComposer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# StorageComposer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with StorageComposer.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+SUBSYSTEM!="block|machinecheck", GOTO="bcache_end"
+ACTION=="remove", GOTO="bcache_end"
+ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}=="1", GOTO="bcache_end"
+KERNEL=="fd*|sr*", GOTO="bcache_end"
+
+# blkid was run by the standard udev rules
+ENV{ID_FS_TYPE}=="bcache", \
+        IMPORT{program}="/usr/local/sbin/bcache-helper probe $tempnode"
+ENV{SB_VERSION}!="?*", GOTO="bcache_symlinks"
+
+ENV{DEV_UUID}=="?*", SYMLINK+="disk/by-uuid/$env{DEV_UUID}"
+RUN{builtin}+="kmod load bcache"
+RUN+="/usr/local/sbin/bcache-helper register"
+
+# Cached devices: symlink
+LABEL="bcache_symlinks"
+DRIVER=="bcache", ENV{CACHED_UUID}=="?*", \
+        SYMLINK+="bcache/by-uuid/$env{CACHED_UUID}"
+DRIVER=="bcache", ENV{CACHED_LABEL}=="?*", \
+        SYMLINK+="bcache/by-label/$env{CACHED_LABEL}"
+
+LABEL="bcache_end"

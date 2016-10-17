@@ -1,0 +1,199 @@
+#!/bin/sh
+
+# Helper script used by the custom bcache udev rule for StorageComposer
+# =====================================================================
+#
+# Log messages are written to the kernel log (dmesg).
+#
+# Usage:
+#
+#   $0 probe <device>
+#      Prints variables SB_VERSION, DEV_UUID and CSET_UUID (suitable for udev IMPORT{program})
+#      and variables DEV_FILE, CSET_FOR and BACKING_FOR (for registering with this script)
+#
+#   $0 register [<hint> ...]
+#      Registers the probed device as a cache/backing device, and also the corresponding
+#      backing/cache device(s), if so defined by <cache-backing-device-relation>s.
+#
+#      The environment must contain the variables that were set during probing.
+#
+#      Each <hint> defines the relation between a cache device and one or several backing
+#      devices. It is a name/value pair (two separate arguments) such as:
+#          cset_for_backing_uuid_<backing-uuid> <cset-uuid>
+#          (defines the cache used by a given backing device)
+#      and
+#          backing_uuids_for_cset_<cset-uuid> '<backing-uuid> ...'
+#          (defines the backing device(s) using a given cache)
+#      Hyphens in names ('cset_for_backing_uuid_...' and 'backing_uuids_for_cset_...')
+#      must be replaced with '_'.
+#
+#      Additionally, hints will be read from file 'bcache-hints' located in the same
+#      directory as this script. If it exists, is must contain variable definitions like
+#          cset_for_backing_uuid_<backing-uuid>=<cset-uuid>
+#      and
+#          backing_uuids_for_cset_<cset-uuid>='<backing-uuid> ...'
+#
+# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+#
+# This file is part of "StorageComposer".
+#
+# StorageComposer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# StorageComposer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with StorageComposer.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# File name of this script
+SCRIPTNAME=$(basename $0)
+
+# Logging device
+LOGGER=/dev/kmsg
+
+
+# --------------------------------------------------------------------------
+
+# Writes the specified message to the kerne log (dmesg).
+#
+# Arguments:
+#   $1     message
+#   $ARGS  command line arguments, become part of message header
+#
+log() {
+  echo "$SCRIPTNAME ($ARGS): $1" >>$LOGGER
+}
+
+
+# --------------------------------------------------------------------------
+
+# Waits until the specified file or directory appears in the file system.
+# Times out and terminates this script with exit code 1 after 2 seconds.
+#
+# Arguments:
+#   $1  file/directory path
+#
+wait_file() {
+  local T=8
+  while [ ! -e $1 ]; do
+    sleep .25
+    T=$((T-1))
+    [ $T -le 0 ] && exit 1
+  done
+}
+
+
+# --------------------------------------------------------------------------
+
+# Registers a block device as a cached or as a backing device for bcache,
+# sets BCACHE_DIR to the control directory and waits until this directory
+# appears in the file system.
+# Returns 0 if successful, or terminates this script with a non-zero exit 
+# code.
+#
+# Arguments:
+#   $1  device to register (/dev/*)
+#
+register() {
+  log "trying to register $1"
+  BCACHE_DIR=$(find -L /sys/block -maxdepth 2 -type d -name $(basename $1))/bcache
+  [ ! -d $BCACHE_DIR ] \
+    && echo $1 >/sys/fs/bcache/register \
+    && wait_file $BCACHE_DIR \
+    && log "$1 registered"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Attaches the previously registered backing device to a caching device.
+# Returns 0 if successful, or terminates this script with a non-zero exit 
+# code.
+#
+# Arguments:
+#   $1           caching device (/dev/*)
+#   $BCACHE_DIR  control directory of backing device
+#
+attach_to() {
+  log "trying to attach via $BCACHE_DIR to $1"
+  [ ! -e $BCACHE_DIR/cache ] \
+    && echo $1 >$BCACHE_DIR/attach \
+    && wait_file $BCACHE_DIR/cache \
+    && log "attached to $1"
+}
+
+
+# ---------------------------- Script starts here --------------------------
+
+ARGS="$*"
+MODE=$1
+
+case $MODE in
+  probe)
+    # Print variables
+    log 'printing variables'
+    echo "DEV_FILE=$2"
+    bcache-super-show $2 2>/dev/null | \
+    busybox awk \
+     '/sb\.version|(dev|cset)\.uuid/ { gsub(/\./, "_", $1); printf "%s=%s\n", toupper($1), $2; } \
+      /dev_uuid/ { printf "CSET_FOR=cset_for_backing_uuid_%s\n", gensub(/-/, "_", "g", $2); } \
+      /cset_uuid/ { printf "BACKING_FOR=backing_uuids_for_cset_%s\n", gensub(/-/, "_", "g", $2); }'
+    ;;
+
+  register)
+    # Get cache/backing device relations from hint file, if present
+    BCACHE_HINTS=${0%/*}/bcache-hints
+    [ -r $BCACHE_HINTS ] && . $BCACHE_HINTS && log "read $BCACHE_HINTS" || log "$BCACHE_HINTS not found"
+
+    # Get cache/backing device relations as name/value pairs from command line
+    shift
+    while [ -n "$2" ]; do
+      eval $1="'$2'"
+      shift 2
+    done
+
+    case "$SB_VERSION" in
+      1)
+        # Backing device -- register it
+        log "$DEV_FILE is a backing device"
+        register $DEV_FILE
+
+        # Attach to cache device, if known
+        eval "CSET_UUID=\$${CSET_FOR}"
+        [ -n "$CSET_UUID" ] && attach_to $CSET_UUID
+        ;;
+
+      3)
+        # Cache device -- register it
+        log "$DEV_FILE is a cache device"
+        register $DEV_FILE
+
+        # Register and attach backing devices to this cache, if any
+        eval "BACKING_UUIDS=\$${BACKING_FOR}"
+        [ -n "$BACKING_UUIDS" ] && for BACKING_UUID in $BACKING_UUIDS; do
+          backing_dev=$(readlink -fn /dev/disk/by-uuid/$BACKING_UUID)
+          [ -n "$backing_dev" ] || continue
+          register $(readlink -fn /dev/disk/by-uuid/$BACKING_UUID)
+          attach_to $CSET_UUID
+        done
+        ;;
+      *)
+        log "unexpected environment: SB_VERSION=$SB_VERSION, DEV_FILE=$DEV_FILE"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  *)
+    log "no such mode: '$MODE'"
+    exit 1
+    ;;
+esac
+
+exit 0
