@@ -1481,7 +1481,7 @@ EOF
   if [ "$INSTALL_GOAL" ]; then
     # Get host's package repository
     REPO=$(grep -m 1 -o -E 'https?://.*\.(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
-      die 'No Ubuntu repository URL found in /etc/apt/sources.list'
+      || die 'No Ubuntu repository URL found in /etc/apt/sources.list'
 
     # Attempting to cache the boot file system?
     if [ "${CACHED_BY[$BOOT_DEV_INDEX]}" ]; then
