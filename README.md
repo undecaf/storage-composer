@@ -41,7 +41,7 @@ in a way that corrupts your data, therefore:
     - [Bootable with OS on SSD, various file systems](#bootable-with-os-on-ssd-various-file-systems)
    - [RAID](#raid)
      - [Bootable RAID1](#bootable-raid1)
-     - [Accelerated RAID1 mixing SSDs and HDDs](#accelerated-raid1-mixing-ssds-and-hdds)
+     - [Accelerated RAID1 of SSDs and HDDs](#accelerated-raid1-of-ssds-and-hdds)
      - [Everything RAIDed](#everything-raided)
    - [Encryption](#encryption)
      - [Encrypted backup storage](#encrypted-backup-storage)
@@ -228,12 +228,15 @@ content of a file, see below.
   <p><b>Caution:</b> always keep a copy of your key file offline in a
   safe place.</p></dd>
 
-  <dt><code>Enter passphrase:</code>, or<br>
-  <code>Enter passphrase (empty for previous one):</code></dt>
-  <dd><p>Appears whenever a conventional or a GPG passphrase is required (LUKS
-  authorization methods&nbsp;1 and&nbsp;3). Any new passphrase must be repeated.
-  The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> is
-  remembered for five&nbsp;minutes and can be re-used easily.</p></dd>
+  <dt><code>LUKS passphrase:</code>, or<br>
+  <code>Key file passphrase:</code></dt>
+  <dd><p>Appears whenever a passphrase is required for LUKS authorization 
+  methods&nbsp;1 and&nbsp;3. When building, each passphrase must
+  be repeated for verification.
+  The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> and
+  authorization method is remembered for five&nbsp;minutes. Within that time,
+  it does not have to be retyped and can be used for unattended mounting
+  (<code>-m&nbsp;-y</code>).</p></dd>
 </dl>
 
 #### Miscellaneous
@@ -254,12 +257,18 @@ These options affect all file systems.
 </dl>
 
 #### Bootable target system
-There is only a single configuration option:
+There are only a few target configuration options:
 <dl>
   <dt><code>Hostname:</code></dt>
   <dd><p>Determines the hostname of the target when it is running.</p></dd>
+
+  <dt><code>Username (empty to copy host user):</code>,<br>
+  <code>Login passphrase:</code></dt>
+  <dd><p>Defines a user account to be created on the target system. For 
+  convenience, username and passphrase of the current host user (the one running
+  <code>sudo&nbsp;stcomp.sh</code>) can be copied to the target easily.</p></dd>
 </dl>
-These settings are inherited from the host system:
+Other settings are inherited from the host system:
 - architecture (`x86` or `amd64`)
 - distribution version (`Xenial` etc.)
 - main Ubuntu package repository
@@ -267,7 +276,6 @@ These settings are inherited from the host system:
 - time zone
 - keyboard configuration
 - console setup (character set and font)
-- current user (the one running `sudo stcomp.sh`) and her login passphrase
 
 ### Is it reliable? Testing
 TODO
@@ -422,7 +430,7 @@ Everything is on a RAID1 except for swap space.
 	</tr>
 </table>
 
-#### Accelerated RAID1 mixing SSDs and HDDs
+#### Accelerated RAID1 of SSDs and HDDs
 If a RAID1 has both SSD as well as HDD components, SSDs are used for reading (if
 possible), and write-behind is activated on the HDDs. Performance is comparable
 to an SSD.
@@ -811,7 +819,7 @@ as cache.
 - [Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?](#why-does-storagecomposer-sometimes-appears-to-hang-when-run-again-shortly-after-creating-a-target-with-md-raid)
 - [Does StorageComposer alter the host system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
 - [What if drive names change between successive runs of StorageComposer?](#what-if-drive-names-change-between-successive-runs-of-storagecomposer)
-- [How to get rid of `*** Device is mounted or has a holder or is unknown ***`?](#how-to-get-rid-of-device-is-mounted-or-has-a-holder-or-is-unknown)
+- [How to deal with “Device is mounted or has a holder or is unknown”?](#how-to-deal-with-device-is-mounted-or-has-a-holder-or-is-unknown)
 
 #### Which Ubuntu hosts are supported?
 Xenial or later is strongly recommended as the host system. Some packages may
@@ -926,7 +934,7 @@ affect StorageComposer as it identifies partitions by UUID in the
 looked up by UUID and adapt automatically to the current drive naming scheme
 of your system.
 
-#### How to get rid of `*** Device is mounted or has a holder or is unknown ***`?
+#### How to deal with “Device is mounted or has a holder or is unknown”?
 Apart from the obvious (unknown device), this error message may appear if your
 build/mount configuration contains a device which is a currently active MD/RAID
 or bcache component (eventually as the result of a previous run of 

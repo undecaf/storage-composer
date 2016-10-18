@@ -101,7 +101,7 @@ install_pkg() {
   fi
 
   for P; do
-    dpkg -L "$P" > /dev/null 2>&1 || apt-get --no-install-recommends -q -y install "$P"
+    dpkg -L "$P" >/dev/null 2>&1 || apt-get --no-install-recommends -q -y install "$P" >/dev/null
   done
 
   [ -n "$TARGET_OPT" ] && TARGET_PKGS="$TARGET_PKGS $@" || true
@@ -201,7 +201,7 @@ read_text() {
     elif [ -z "$3" ]; then
       echo '*** Input must not be blank ***' 1>&2
     else
-      echo "*** Input must be one of: ${3// /, } ***" 1>&2
+      echo "*** Input must match one of: ${3// /, } ***" 1>&2
     fi
   done
 
@@ -249,17 +249,21 @@ read_int() {
 
 # --------------------------------------------------------------------------
 
-# Ensures that the keyring contains a passphrase for the current
-# configuration and prints the passphrase ID to stdout. Error messages go to
-# stderr.
-# If a prompt was specified or if no passphrase is available then the user
-# is prompted for one (including verification). 
-# Otherwise, the user may either enter a new passphrase or keep the previous
-# one.
+# Ensures that the keyring contains a passphrase for the current 
+# authorization method of the current configuration file and prints the
+# passphrase ID to stdout. Error messages go to stderr.
+# If the keyring contains a passphrase is available then the user may enter
+# a new passphrase or keep the current one. Otherwise, the user must enter
+# a passphrase. Optionally, the user can be prompted to retype the 
+# passphrase for verification.
 #
 # Arguments:
-#   $1              prompt for new passphrase (optional)
+#   $1              initial passphrase prompt (without indentation and
+#                   without trailing ': ')
+#   $2              non-empty to request retyping the passphrase for
+#                   verification
 #   $CONFIG_FILE    name of configuration file
+#   $AUTH_METHOD    authorization method (1..3)
 #   $PW_EXPIRATION  passphrase expiration time (in s, from last call of this
 #                   function)
 #   $BATCH_MODE     non-empty if running not interactively
@@ -267,55 +271,92 @@ read_int() {
 #   install_pkg
 #
 read_passphrase() {
-  [ "$BATCH_MODE" ] && die "Cannot enter a passphrase in batch mode"
-
   install_pkg keyutils
 
+  local PW_DESC="pw:$CONFIG_FILE:$AUTH_METHOD"
+  local ID
   local REPLY
-  local PW_DESC="pw:$CONFIG_FILE"
+  local PW
 
   # Repeat only if the passphrase expires while in this loop
   while true; do
-    local ID
+    ID=$(keyctl search @u user "$PW_DESC" 2>/dev/null)
+    [ -z "$ID" -a -n "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
 
-    if [ "$1" ]; then
-        read -ersp "$1"
-    else
-      ID=$(keyctl search @u user "$PW_DESC" 2>/dev/null)
-      if [ "$ID" ]; then
-        read -ersp '  Enter passphrase (empty for previous one): '
-        [ "${REPLY// /}" ] && ID=
-      else
-        read -ersp '  Enter passphrase: '
-      fi
-    fi
+    local PROMPT="  $1"
+    [ "$ID" ] && PROMPT="$PROMPT (empty for previous one)"
 
+    # Prompt for passphrase
+    read -ersp "$PROMPT: "
     echo '' 1>&2
 
-    if [ ! "$ID" ]; then
-      # New passphrase, or no passphrase in keyring
-      local PW
+    # Empty response, and cached passphrase available?
+    [ -z "$REPLY" -a -n "$ID" ] && break
 
-      while [ "$1" ]; do
-        PW="$REPLY"
-        read -ersp '  Repeat passphrase: '
-        echo '' 1>&2
-        [ "$REPLY" = "$PW" ] && break
-        echo '  *** Passphrases do not match, please try again ***' 1>&2
-        read -ersp '  Enter passphrase: '
-        echo '' 1>&2
-      done
+    # Prompt for verification if so requested
+    while [ "$2" ]; do
+      PW="$REPLY"
+      read -ersp '  Repeat passphrase: '
+      echo '' 1>&2
+      [ "$REPLY" = "$PW" ] && break
 
-      # Save passphrase to keyring
-      ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u)
-    fi
+      echo '  *** Passphrases do not match ***' 1>&2
+      read -ersp "$PROMPT: "
+      echo '' 1>&2
+    done
+
+    # Save (verified) passphrase to keyring
+    ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u)
 
     # Repeat if passphrase expired while in this loop
     keyctl timeout $ID $PW_EXPIRATION 2>/dev/null && break
     echo '  *** Previous passphrase expired, enter a new one ***' 1>&2
   done
 
-  echo $ID
+  echo -n $ID
+}
+
+
+# --------------------------------------------------------------------------
+
+# Reads and verifies a login passphrase on stdin and prints the SHA512 hash
+# to stdout. Error messages go to stderr.
+# If a passphrase hash was specified then the user may also accept this
+# passphrase; otherwise, he must enter and verify a new one.
+#
+# Arguments:
+#   $1              default passphrase hash (optional)
+#   $BATCH_MODE     non-empty if running not interactively
+# Calls:
+#   install_pkg
+#
+read_login() {
+  [ "$BATCH_MODE" ] && die 'Cannot enter a login passphrase in batch mode'
+
+  install_pkg whois
+
+  local PROMPT='  Login passphrase: '
+  [ "$1" ] && PROMPT='  Login passphrase (empty to leave unchanged): '
+  local REPLY
+  local PREV_REPLY
+
+  while true; do
+    while true; do
+      read -ersp "$PROMPT"
+      echo '' 1>&2
+      [ "$REPLY" ] && break
+      [ -n "$1" ] && echo -n "$1" && return
+      echo '  *** Passphrase must not be empty ***' 1>&2
+    done
+    PREV_REPLY="$REPLY"
+
+    read -ersp '  Repeat passphrase: '
+    echo '' 1>&2
+    [ "$PREV_REPLY" = "$REPLY" ] && break
+    echo '  *** Passphrases do not match ***' 1>&2
+  done
+
+  echo -n "$REPLY" | mkpasswd -s -m sha-512
 }
 
 
@@ -1152,6 +1193,8 @@ KEY_FILE=
 KEY_FILE_SIZE=
 PREFIX=
 TARGET_HOSTNAME=$HOSTNAME
+TARGET_USERNAME=
+TARGET_PWHASH=
 
 # Repeat configuration until confirmed by user
 while true; do
@@ -1174,14 +1217,14 @@ while true; do
 
   else
     if [ -z "$BATCH_MODE" ]; then
-      # Show overview of devices and unmounted partitions
+      # Show overview of devices and partitions
       cat <<- EOF
 
 Block devices
 =============
   
 EOF
-      lsblk -o NAME,FSTYPE,SIZE,LABEL,MOUNTPOINT /dev/sd?  | grep -v /
+      lsblk -o NAME,FSTYPE,SIZE,LABEL,MOUNTPOINT /dev/sd?
       echo ''
     fi
     
@@ -1244,7 +1287,7 @@ EOF
       if [ "$FS_TYPE" != swap ]; then
         DEFAULT=${MOUNT_OPTIONS[$NUM_FS]}
         [ "$DEFAULT" ] || DEFAULT=${DEFAULT_MOUNT_OPTIONS[$FS_TYPE]}
-        MOUNT_OPTIONS[$NUM_FS]=$(read_text '    Mount options (optional): ' "$DEFAULT" '^.*$')
+        MOUNT_OPTIONS[$NUM_FS]=$(read_text '    Mount options (optional): ' "$DEFAULT" '.*')
       fi
     done
 
@@ -1274,16 +1317,13 @@ EOF
       PREV_AUTH_METHOD=$AUTH_METHOD
       AUTH_METHOD=$(read_text $'LUKS authorization method\n  1=passphrase\n  2=key file (may be on a LUKS partition)\n  3=encrypted key file: ' "$AUTH_METHOD" '1 2 3')
 
-      # Enforce a new passphrase if the authorization method was changed or if building a new file system
-      PROMPT=
-      [ "$AUTH_METHOD" != "$PREV_AUTH_METHOD" -o -n "$BUILD_GOAL" ] && PROMPT='  Enter passphrase: '
       KEY_ID=
       PW_ID=
 
       case $AUTH_METHOD in
         1)
-          # Save passphrase to keyring, use passphrase as key
-          KEY_ID=$(read_passphrase "$PROMPT")
+          # Save passphrase to keyring, use passphrase as LUKS key
+          KEY_ID=$(read_passphrase 'LUKS passphrase' "$BUILD_GOAL")
           KEY_FILE=
           KEY_FILE_SIZE=
           MP_REL_KEY_FILE=
@@ -1292,7 +1332,7 @@ EOF
         2)
           # Select key file, create it if $BUILD_GOAL and not found
           while true; do
-            KEY_FILE=$(read_filepath '  Key file (should be on a mounted removable device): ' "$KEY_FILE")
+            KEY_FILE=$(read_filepath '  Key file (preferably on a removable device): ' "$KEY_FILE")
 
             if ! MP_REL_KEY_FILE=$(mount_point_relative "$KEY_FILE"); then
               # Directory does not exist
@@ -1323,7 +1363,7 @@ EOF
         3)
           # Select encrypted key file, create it if $BUILD_GOAL and not found
           while true; do
-            KEY_FILE=$(read_filepath '  Encrypted key file (should be on a mounted removable device): ' "$KEY_FILE")
+            KEY_FILE=$(read_filepath '  Encrypted key file (preferably on a removable device): ' "$KEY_FILE")
 
             if ! MP_REL_KEY_FILE=$(mount_point_relative "$KEY_FILE"); then
               # Directory does not exist
@@ -1331,9 +1371,9 @@ EOF
               continue
 
             elif [ -r "$KEY_FILE" ]; then
-              # Key file exists, get and validate passphrase
+              # Key file exists, get passphrase and verify that the file can be decrypted
               while true; do
-                PW_ID=$(read_passphrase "$PROMPT")
+                PW_ID=$(read_passphrase 'Key file passphrase')
                 cat "$KEY_FILE" | gpg --quiet --yes --passphrase $(keyctl pipe $PW_ID) --output /dev/null && break 2
               done
 
@@ -1348,7 +1388,7 @@ EOF
               KEY_FILE_SIZE=$(read_int '  size (256...8192): ' "$KEY_FILE_SIZE" 256 8192)
 
               # Get passphrase
-              PW_ID=$(read_passphrase '  Enter passphrase: ')
+              PW_ID=$(read_passphrase 'Key file passphrase' verify)
 
               # Save encrypted random key in the key file
               gpg --quiet --gen-random 1 $KEY_FILE_SIZE | gpg --quiet --yes --symmetric --cipher-algo AES256 --s2k-digest-algo SHA256 --passphrase $(keyctl pipe $PW_ID) --output "$KEY_FILE"
@@ -1362,7 +1402,7 @@ EOF
     fi
 
     # Optional prefix to /dev/mapper names and volume labels
-    PREFIX=$(read_text 'Prefix to mapper names and labels (recommended): ' "$PREFIX" '^[A-Za-z0-9_-]*$')
+    PREFIX=$(read_text 'Prefix to mapper names and labels (recommended): ' "$PREFIX" '[A-Za-z0-9_-]*')
     
     # Target mount point
     while true; do
@@ -1371,9 +1411,22 @@ EOF
       confirmed "  $TARGET does not exist, create it" y && break
     done
 
-    # Target system's hostname
+    # Target system's hostname, username and password
     if [ "$INSTALL_GOAL" ]; then
-      TARGET_HOSTNAME=$(read_text 'Hostname: ' "$TARGET_HOSTNAME" '^[[:alnum:]]+$')
+      TARGET_HOSTNAME=$(read_text 'Hostname: ' "$TARGET_HOSTNAME" '[A-Za-z][A-Za-z0-9_-]*')
+
+      PREV_USERNAME=$TARGET_USERNAME
+      TARGET_USERNAME=$(read_text "Username (empty to copy host user '$SUDO_USER'): " "$TARGET_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
+
+      if [ "$TARGET_USERNAME" ]; then
+        # Read login passphrase, previous login passphrase may be reused if it exists and if the username was not changed
+        [ "$TARGET_USERNAME" != "$PREV_USERNAME" ] && TARGET_PWHASH=
+        TARGET_PWHASH=$(read_login "$TARGET_PWHASH")
+      else
+        # Copy current user and login passphrase
+        TARGET_USERNAME=$SUDO_USER
+        TARGET_PWHASH=$(grep $SUDO_USER /etc/shadow | cut --delimiter ':' --fields 2)
+      fi
     fi
   fi
 
@@ -1565,6 +1618,8 @@ EOF
         "Installing:             $DISTRIB_DESCRIPTION"
       echo \
         "Hostname:               $TARGET_HOSTNAME"
+      echo \
+        "Username:               $TARGET_USERNAME"
     fi
 
     echo ''
@@ -1582,7 +1637,7 @@ EOF
   sudo --user=$SUDO_USER truncate -s 0 $CONFIG_FILE
   for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
       ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
-      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME; do
+      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH; do
     echo "$(declare -p $V)" >> $CONFIG_FILE
   done
 
@@ -1593,9 +1648,7 @@ EOF
     case $AUTH_METHOD in
       1)
         # Save passphrase to keyring, passphrase == key
-        PROMPT=
-        [ "$BUILD_GOAL" ] && PROMPT='  Enter new passphrase: '
-        [ "$KEY_ID" ] || KEY_ID=$(read_passphrase "$PROMPT")
+        [ "$KEY_ID" ] || KEY_ID=$(read_passphrase 'LUKS passphrase' "$BUILD_GOAL")
         ;;
 
       2)
@@ -1607,7 +1660,7 @@ EOF
       3)
         # Save decrypted key file content to keyring
         while true; do
-          [ "$PW_ID" ] || PW_ID=$(read_passphrase)
+          [ "$PW_ID" ] || PW_ID=$(read_passphrase 'Key file passphrase')
           KEY_ID=$(cat "$KEY_FILE" | gpg --quiet --yes --passphrase "$(keyctl pipe $PW_ID)" --output - | keyctl padd user "$KEY_DESC" @u 2>/dev/null) && break
           PW_ID=
         done
@@ -1993,15 +2046,14 @@ fi
 # Copy debconf settings from host
 install_pkg debconf-utils
 mkdir -p ${TARGET}/tmp
-DEBCONF=$(mktemp ${TARGET}/tmp/debconfXXXX.tmp)
+DEBCONF=/tmp/debconf-selections
 on_exit "Removing ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
-debconf-get-selections | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >$DEBCONF
+debconf-get-selections | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
 cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
 
 # chroot into the installation target
 mount_devs
 echo "Configuring target system: chroot into $TARGET"
-SUDO_PW=$(grep $SUDO_USER /etc/shadow | cut --delimiter ':' --fields 2)
 
 if chroot $TARGET /bin/bash -l <<- EOF
 	set -e +x
@@ -2019,30 +2071,28 @@ if chroot $TARGET /bin/bash -l <<- EOF
 	echo -e 'PRETTY_HOSTNAME=$TARGET_HOSTNAME\nICON_NAME=computer\nCHASSIS=desktop\nDEPLOYMENT=production' > /etc/machine-info
 	sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
 
-	# Configure locale, timezone, console and keyboard
-	locale-gen $LANG
-	apt-get -y -q --no-install-recommends install \
-	  network-manager nano man-db plymouth-themes console-data console-setup bash-completion
-	  
-	update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
+  # Install minimum required packages
+  echo 'Installing additional packages'
+  locale-gen $LANG
+  apt-get -y -q --no-install-recommends install \
+    network-manager nano man-db plymouth-themes console-data console-setup bash-completion $(sorted_unique $TARGET_PKGS)
+    
+	# Configure locale, timezone, console and keyboard (crude but working)
+  update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
 
-	cp -fp /tmp/{localtime,timezone} /etc
-	cp -fp /tmp/default/{keyboard,console-setup} /etc/default
-	cp -fpR /tmp/console-setup /etc
-	
-	debconf-set-selections $DEBCONF
-	for P in tzdata keyboard-configuration console-data console-setup; do
-	  dpkg-reconfigure -f noninteractive \$P
-	done
+  cp -fp /tmp/{localtime,timezone} /etc
+  cp -fp /tmp/default/{keyboard,console-setup} /etc/default
+  cp -fpR /tmp/console-setup /etc
+  
+  debconf-set-selections $DEBCONF
+  for P in tzdata keyboard-configuration console-data console-setup; do
+    dpkg-reconfigure -f noninteractive \$P
+  done
 
-	# Copy current (non-sudo) user from host
-	echo 'Copying user $SUDO_USER'
-	useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $SUDO_USER
-	echo '$SUDO_USER:$SUDO_PW' | chpasswd -e
-
-	# Install packages required for file system
-	echo 'Installing additional packages'
-	apt-get -y -q --no-install-recommends install $(sorted_unique $TARGET_PKGS)
+  # Create user
+  echo "Creating user '$TARGET_USERNAME'"
+  useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
+  echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
 
 	# Install and configure boot loader
 	DEBIAN_FRONTEND=noninteractive apt-get -y -q --no-install-recommends install grub-pc os-prober
