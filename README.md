@@ -21,17 +21,19 @@ in a way that corrupts your data, therefore:
 
 ##### :warning: Please backup your data before you start using StorageComposer.
 ##### :warning: Test thoroughly before you trust your storage.
-##### :warning: Proceed at your own risk.
+
+## Proceed at your own risk
 
 - [Usage](#usage)
   - [Installation](#installation)
   - [Disk partitioning](#disk-partitioning)
   - [Running StorageComposer](#running-storagecomposer)
-  - [Configuring your storage](#configuring-the-target-system)
+  - [Configuring the target system](#configuring-the-target-system)
     - [File systems](#file-systems)
     - [Authorization](#authorization)
     - [Miscellaneous](#miscellaneous)
     - [Bootable target system](#bootable-target-system)
+  - [Is it reliable? Testing](#is-it-reliable-testing)
 - [Examples](#examples)
   - [Plain file systems](#plain-file-systems)
     - [Backup or media storage with ext4](#backup-or-media-storage-with-ext4)
@@ -85,14 +87,14 @@ Depending on the command line arguments, one of these tasks is performed:
   the target bootable.
   Diagnostic messages&nbsp;(`-d`) can be enabled for building and also for
   booting from the target.<br>
-  Command line: `stcomp.sh -b [-i] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
+  Command line: `sudo stcomp.sh -b [-i] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
 - __Mount__&nbsp;(`-m`) a previously built target system and prepare it for 
   `chroot`-ing; can also run without user interaction&nbsp;(`-y`) and with
   diagnostic messages&nbsp;(`-d`).<br>
-  Command line: `stcomp.sh -m [-y] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
+  Command line: `sudo stcomp.sh -m [-y] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
 - __Unmount__&nbsp;(`-u`) a target system from its mount point in the host
   system; can run without user interaction&nbsp;(`-y`).<br>
-  Command line: `stcomp.sh -u [-y] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
+  Command line: `sudo stcomp.sh -u [-y] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
 - Display a __help message__&nbsp;(`-h`).<br>
   Command line: `stcomp.sh -h`
 
@@ -255,18 +257,20 @@ These options affect all file systems.
 There is only a single configuration option:
 <dl>
   <dt><code>Hostname:</code></dt>
-  <dd><p>Determines the hostname of a the target when it is running.</p></dd>
+  <dd><p>Determines the hostname of the target when it is running.</p></dd>
 </dl>
 These settings are inherited from the host system:
 - architecture (`x86` or `amd64`)
 - distribution version (`Xenial` etc.)
+- main Ubuntu package repository
 - locale
 - time zone
 - keyboard configuration
 - console setup (character set and font)
-- current user (the one running `sudo stcomp.sh`) and her password
+- current user (the one running `sudo stcomp.sh`) and her login passphrase
 
-The target system will use the same Ubuntu repository as the host system.
+### Is it reliable? Testing
+TODO
 
 ## Examples
 Target drives used in these examples start at `/dev/sde`. Drives are hard disks unless
@@ -793,6 +797,22 @@ as cache.
 
 ## FAQ
 
+- [Which Ubuntu hosts are supported?](#which-ubuntu-hosts-are-supported)
+- [What about Debian hosts and targets?](#what-about-debian-hosts-and-targets)
+- [Why use an external tool for partitioning?](#why-use-an-external-tool-for-partitioning)
+- [How to create a _complete_ Ubuntu/Xubuntu/Kubuntu/... target with StorageComposer?](#how-to-create-a-_complete_-ubuntu-xubuntu-kubuntu-target-with-storagecomposer)
+- [Which file systems can be created?](#which-file-systems-can-be-created)
+- [What does “SSD erase block size” mean and why should I care?](#what-does-ssd-erase-block-size-mean-and-why-should-i-care)
+- [Can I create a “fully encrypted” target system?](#can-i-create-a-fully-encrypted-target-system)
+- [Why does StorageComposer not support LUKS-encrypted boot partitions although GRUB2 does?](#why-does-storagecomposer-not-support-luks-encrypted-boot-partitions-although-grub2-does)
+- [Do I have to retype my passphrase for each encrypted file system during booting?](#do-i-have-to-retype-my-passphrase-for-each-encrypted-file-system-during-booting)
+- [How to achieve two-factor authentication for encrypted file systems?](#how-to-achieve-two-factor-authentication-for-encrypted-file-systems)
+- [To which drives is the MBR written?](#to-which-drives-is-the-mbr-written)
+- [Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?](#why-does-storagecomposer-sometimes-appears-to-hang-when-run-again-shortly-after-creating-a-target-with-md-raid)
+- [Does StorageComposer alter the host system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
+- [What if drive names change between successive runs of StorageComposer?](#what-if-drive-names-change-between-successive-runs-of-storagecomposer)
+- [How to get rid of `*** Device is mounted or has a holder or is unknown ***`?](#how-to-get-rid-of-device-is-mounted-or-has-a-holder-or-is-unknown)
+
 #### Which Ubuntu hosts are supported?
 Xenial or later is strongly recommended as the host system. Some packages may
 behave differently or may not work properly at all in earlier versions. 
@@ -809,12 +829,12 @@ functions in StorageComposer did not appear worthwhile.
 Unfortunalety, I could not make the Ubuntu Live DVD installer work with encrypted and
 cached partitions created by StorageComposer.
 
-Therefore, let StorageComposer first install a minimal Ubuntu onto
-your target system. `chroot` into or boot your target and install one of
-these packages: `{ed,k,l,q,x,}ubuntu-desktop`. The result is similar
-although not identical to what the Ubuntu installer produces.
+Therefore, let StorageComposer install a minimal Ubuntu on your target system first.
+Then `chroot` into your target or boot it and install one of these packages:
+`{ed,k,l,q,x,}ubuntu-desktop`. The result is similar but not identical
+to what the Ubuntu installer produces.
 
-#### Which file systems can be used?
+#### Which file systems can be created?
 Currently [ext2, ext3, ext4](https://ext4.wiki.kernel.org/index.php/Main_Page),
 [btrfs](https://btrfs.wiki.kernel.org/index.php/Main_Page), 
 [xfs](http://xfs.org/index.php/Main_Page) and swap space.
@@ -828,16 +848,16 @@ or not alignment with erase block size actually affects SSD performance seems
 unclear as indicated by controversial blogs in the
 [references](#references-and-credits). 
 
-#### Can I create a “fully encrypted” storage system?
-Yes, if the system is not bootable and is used only for _storage_, e.g. for
+#### Can I create a “fully encrypted” target system?
+Yes, if the target system is not bootable and is used only for _storage_, e.g. for
 backups or for media. 
 
-If the system is bootable then the MBR and the boot partition remain unencrypted 
+If the target is bootable then the MBR and the boot partition remain unencrypted 
 which makes them vulnerable to
 [“evil maid” attacks](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
 A tool like [chkboot](https://github.com/inhies/chkboot#introduction)
 could be used to detect whether MBR or boot partition have been tampered with,
-but unfortunately only _after_ malware had an opportunity to run. Please note
+but unfortunately only _after_ the malware had an opportunity to run. Please note
 that such systems are frequently called “fully encrypted” although they are not.
 
 #### Why does StorageComposer not support LUKS-encrypted boot partitions although GRUB2 does?
@@ -868,7 +888,7 @@ If the storage is made bootable then an MBR is written to all target drives
 making up the file system mounted at `/boot` if such a file system exists.
 Otherwise, the MBR goes to all target drives of the root file system.
 
-#### When run again shortly after creating a target with MD/RAID, StorageComposer sometimes appears to hang. Why?
+#### Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?
 Immediately after being created, the RAID starts an initial resync. During that
 time, RAID performance is quite low, notably for RAID5 and RAID6. Since 
 StorageComposer queries all block devices (including RAIDs) repeatedly, this
@@ -908,13 +928,13 @@ of your system.
 
 #### How to get rid of `*** Device is mounted or has a holder or is unknown ***`?
 Apart from the obvious (unknown device), this error message may appear if your
-build/mount configuration contains a device which is an active MD/RAID
+build/mount configuration contains a device which is a currently active MD/RAID
 or bcache component (eventually as the result of a previous run of 
 StorageComposer).
 
 First, verify that the device in question __does not belong to your host system__
 and find out where it is mounted, if at all.
-Then run `stcomp.sh -u` with a new configuration file. Specify that device
+Then run `sudo stcomp.sh -u` with a new configuration file. Specify that device
 for the root file system (no caching, no encryption, any file system type) and
 enter the proper mount point (or any empty directory). This will unlock the device.
 
@@ -954,6 +974,10 @@ Credits go to the authors and contributors of these documents:
    
 1. [_Default HDD block error correction timeouts: make entire! drives fail + high risk of data loss during array re-build_](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=780207).
    Debian Bug report #780162, 2015-03-10. Retrieved 2016-10-14.
+
+1. Rath, Nikolaus:
+   [_SSD Caching under Linux_](https://www.rath.org/ssd-caching-under-linux.html).
+   Nikolaus Rath's Website (blog), 2016-02-10. Retrieved 2016-10-18.
    
 1. Overstreet, Kent:
    [_What is bcache?_](https://bcache.evilpiepirate.org/#index2h1)
