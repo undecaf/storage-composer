@@ -158,12 +158,9 @@ afterwards. For each file system, the following prompts appear in this order:
   The caching device will only see encrypted data.
   All encrypted file systems share the same LUKS passphrase (see section
   <a href="#authorization">Authorization</a>).</p>
-  <p>If the target system is bootable then the file system <i>containing</i>
-  <code>/boot</code> (this could also be <code>/</code>) must not be encrypted.
-  Consider using an unencrypted file system having only mount point <code>/boot</code>.
-  See also the FAQ: <a href="#why-does-storagecomposer-not-support-luks-encrypted-boot-partitions-although-grub2-does">
-  Why does StorageComposer not support LUKS-encrypted boot partitions although
-  GRUB2 does?</a></p></dd>
+  <p>If the target system is bootable and <code>/boot</code> is on an encrypted
+  file system then only a conventional passphrase can be used for authorization
+  since key files are not supported by GRUB2.</p></dd>
   
   <dt><code>File system:</code></dt>
   <dd><p>Select one of <code>ext2</code>, <code>ext3</code>, <code>ext4</code>,
@@ -231,7 +228,7 @@ content of a file, see below.
   <dt><code>LUKS passphrase:</code>, or<br>
   <code>Key file passphrase:</code></dt>
   <dd><p>Appears whenever a passphrase is required for LUKS authorization 
-  methods&nbsp;1 and&nbsp;3. When building, each passphrase must
+  methods&nbsp;1 and&nbsp;3. When building a target, each passphrase must
   be repeated for verification.
   The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> and
   authorization method is remembered for five&nbsp;minutes. Within that time,
@@ -266,7 +263,7 @@ There are only a few target configuration options:
   <code>Login passphrase:</code></dt>
   <dd><p>Defines a user account to be created on the target system. For 
   convenience, username and passphrase of the current host user (the one running
-  <code>sudo&nbsp;stcomp.sh</code>) can be copied to the target easily.</p></dd>
+  <code>sudo&nbsp;stcomp.sh</code>) can be copied to the target.</p></dd>
 </dl>
 Other settings are inherited from the host system:
 - architecture (`x86` or `amd64`)
@@ -812,9 +809,10 @@ as cache.
 - [Which file systems can be created?](#which-file-systems-can-be-created)
 - [What does “SSD erase block size” mean and why should I care?](#what-does-ssd-erase-block-size-mean-and-why-should-i-care)
 - [Can I create a “fully encrypted” target system?](#can-i-create-a-fully-encrypted-target-system)
-- [Why does StorageComposer not support LUKS-encrypted boot partitions although GRUB2 does?](#why-does-storagecomposer-not-support-luks-encrypted-boot-partitions-although-grub2-does)
 - [Do I have to retype my passphrase for each encrypted file system during booting?](#do-i-have-to-retype-my-passphrase-for-each-encrypted-file-system-during-booting)
+- [How to avoid retyping my passphrase if `/boot` is encrypted?](#how-to-avoid-retyping-my-passphrase-if-boot-is-encrypted)
 - [How to achieve two-factor authentication for encrypted file systems?](#how-to-achieve-two-factor-authentication-for-encrypted-file-systems)
+- [Is two-factor authentication possible if `/boot` is encrypted?](#is-two-factor-authentication-possible-if-boot-is-encrypted)
 - [To which drives is the MBR written?](#to-which-drives-is-the-mbr-written)
 - [Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?](#why-does-storagecomposer-sometimes-appears-to-hang-when-run-again-shortly-after-creating-a-target-with-md-raid)
 - [Does StorageComposer alter the host system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
@@ -868,28 +866,40 @@ could be used to detect whether MBR or boot partition have been tampered with,
 but unfortunately only _after_ the malware had an opportunity to run. Please note
 that such systems are frequently called “fully encrypted” although they are not.
 
-#### Why does StorageComposer not support LUKS-encrypted boot partitions although GRUB2 does?
-There is not much security to gain from an encrypted boot partition; even then,
-the MBR remains unencrypted and is still vulnerable to
-[“evil maid” attacks](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
-
-Since the passphrase entered for GRUB2 cannot be passed on to the initramfs boot
-process, it would have to be retyped to open the encrypted file system(s). Users
-of non-US keyboards would need a localized GRUB2 keyboard layout; although this
-[is more or less achievable](http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#751260),
-it is cumbersome and has drawbacks. All in all such an approach appeared to rather
-create user inconvenience than to increase security and was therefore discarded.
-
 #### Do I have to retype my passphrase for each encrypted file system during booting?
-No, you need to enter your passphrase only once. The LUKS passphrase is derived
+If `/boot` is not on an encrypted file system then you need to enter
+your passphrase only once. The LUKS passphrase is derived
 from it according to the selected [LUKS authorization method](#authorization)
 and saved in the kernel keyring for all your encrypted file systems. The saved
 LUKS passphrase is discarded after 60&nbsp;seconds when all encrypted file
 systems should be open.
 
+On the other hand, if `/boot` is on an encrypted file system then your 
+passphrase is requested twice: first for `/boot` by GRUB2 and then for the
+actual file system(s) by the initramfs. This is true even if there is only a
+(single) root filesystem. An additional inconvenience is that the keyboard
+is in US layout for the first passphrase and in localized layout for the second
+one. Although
+[localized keyboards are possible in GRUB2](http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#751260),
+the process is cumbersome and the result is less-than-perfect.
+
+Please note also that there is not so much security to gain from an encrypted `/boot`
+file system; even then, the MBR remains unencrypted and is still vulnerable to
+[“evil maid” attacks](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
+
+#### How to avoid retyping my passphrase if `/boot` is encrypted?
+Place `/boot` in a separate LUKS-encrypted file system that uses a passphrase.
+Encrypt the remaining file systems with a key file. Save the key file in the
+initramfs. StorageComposer cannot do this all by itself, some manual work is needed.
+
 #### How to achieve two-factor authentication for encrypted file systems?
 Use a key file for [LUKS authorization](#authorization) (method&nbsp;2 or&nbsp;3)
 and keep it on a removable device (USB stick, MMC card).
+
+#### Is two-factor authentication possible if `/boot` is encrypted?
+Yes, the solution is similar to
+[How to avoid retyping my passphrase if `/boot` is encrypted?](#how-to-avoid-retyping-my-passphrase-if-boot-is-encrypted)
+Just create your `/boot` file system on a removable drive.
 
 #### To which drives is the MBR written?
 If the storage is made bootable then an MBR is written to all target drives
@@ -909,7 +919,7 @@ and restores them when it terminates. This is shown at the console as `Cleanup`.
  
 Depending on your storage configuration, one or more of these packages
 will be installed permanently (unless already present):
-`mdadm`, `smartmontools`, `cryptsetup`, `keyutils`, `gnupg`,
+`mdadm`, `smartmontools`, `cryptsetup`, `keyutils`, `gnupg`, `whois`,
 `bcache-tools`, `btrfs-tools`, `xfsprogs`, `fio`, `debconf-utils`
 and `debootstrap`.
 

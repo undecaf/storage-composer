@@ -1625,9 +1625,8 @@ EOF
     echo ''
 
     if [ -n "$BUILD_GOAL" -o -n "$INSTALL_GOAL" ]; then
-      echo "*** WARNING: existing data on ${ALL_DEVS// /, } will be overwritten! ***"
-      [ "$INSTALL_GOAL" ] && echo "*** WARNING: MBRs on ${BOOT_DEVS// /, } will be overwritten! ***"
-      echo ''
+      echo "*** WARNING: existing data on ${ALL_DEVS// /, } will be overwritten! ***"$'\n'
+      [ "$INSTALL_GOAL" ] && echo "*** WARNING: MBR on ${BOOT_DEVS// /, } will be overwritten! ***"$'\n'
     fi
     confirmed "About to $FRIENDLY_GOAL this configuration -- proceed" y || continue
   fi
@@ -2105,6 +2104,12 @@ if chroot $TARGET /bin/bash -l <<- EOF
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX locale=\${LANG%%.*} bootkbd=\$LC console-setup/layoutcode=\$LC"
 GRUB_GFXMODE=1024x768
 XEOF
+
+  # Handle an encrypted boot partition
+  if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
+    # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
+    echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+  fi
 
 	# Honor debug options
 	case "$DEBUG_MODE" in
