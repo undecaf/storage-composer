@@ -2086,8 +2086,7 @@ XEOF
 	update-grub
 
 	# Install boot loader on all devices that comprise /boot
-	for B in ${STORAGE_DEVS[$BOOT_DEV_INDEX]}; do
-	  B=\${B%%[1-9]*}
+	for B in $BOOT_DEVS; do
 	  echo 'Installing boot loader on '\$B
 	  grub-install \$B
 	done
