@@ -109,12 +109,14 @@ Configuration options are entered/edited strictly sequentially (_sigh_) in the
 order of the following sections. Each option defaults to what was last saved to
 the <code>&lt;config&#x2011;file&gt;</code>.
 
+For each option, entering `?` will indicate what is a valid input.
+
 #### File systems
 Each target system _must have_ a root file system and _can have_ additional file systems.
 If the target is bootable and is running then the root file system appears at
 `/`. If the target is mounted in the host then the root file system
 appears at the [`Target mount point`](#miscellaneous).
-Additional file systems are mounted relative to the root file system.
+In either case, additional file systems are mounted relative to the root file system.
 
 The root file system has to be configured first. More file systems can be added
 afterwards. For each file system, the following prompts appear in this order:
@@ -210,7 +212,7 @@ content of a file, see below.
   	  	  <li><a href="https://www.gnupg.org/gph/en/manual.html">GPG-encrypted</a></li>
   	  	</ul>
   	  	When booting, building or mounting such a target, the user will be
-  	  	prompted for the GPG passphrase.
+  	  	prompted for the key file passphrase.
   	  </li>
   	</ol></p>
     <p>You can create a key file yourself or have StorageComposer create one with
@@ -218,8 +220,8 @@ content of a file, see below.
     MMC card) provides
     <a href="https://en.wikipedia.org/wiki/Multi-factor_authentication">two-factor authentication</a>.</p></dd>
 
-  <dt><code>Key file (should be on a mounted removable device):</code>, or<br>
-  <code>Encrypted key file (should be on a mounted removable device):</code></dt>
+  <dt><code>Key file (preferably on a mounted removable device):</code>, or<br>
+  <code>Encrypted key file (preferably on a mounted removable device):</code></dt>
   <dd><p>Enter the absolute path of the key file. If the file does not exist you will
   be asked whether to have one created.</p>
   <p><b>Caution:</b> always keep a copy of your key file offline in a
@@ -232,7 +234,8 @@ content of a file, see below.
   be repeated for verification.
   The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> and
   authorization method is remembered for five&nbsp;minutes. Within that time,
-  it does not have to be retyped and can be used for unattended mounting
+  it does not have to be retyped and can be used for
+  <a href="#running-storagecomposer">unattended mounting</a>
   (<code>-m&nbsp;-y</code>).</p></dd>
 </dl>
 
@@ -261,7 +264,7 @@ There are only a few target configuration options:
 
   <dt><code>Username (empty to copy host user):</code>,<br>
   <code>Login passphrase:</code></dt>
-  <dd><p>Defines a user account to be created on the target system. For 
+  <dd><p>Defines the user account to create on the target system. For 
   convenience, username and passphrase of the current host user (the one running
   <code>sudo&nbsp;stcomp.sh</code>) can be copied to the target.</p></dd>
 </dl>
@@ -818,6 +821,7 @@ as cache.
 - [Does StorageComposer alter the host system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
 - [What if drive names change between successive runs of StorageComposer?](#what-if-drive-names-change-between-successive-runs-of-storagecomposer)
 - [How to deal with “Device is mounted or has a holder or is unknown”?](#how-to-deal-with-device-is-mounted-or-has-a-holder-or-is-unknown)
+- [Pressing Ctrl-C at an input prompt leaves my Ubuntu terminal in a mess](#pressing-ctrl-c-at-an-input-prompt-leaves-my-ubuntu-terminal-in-a-mess)
 
 #### Which Ubuntu hosts are supported?
 Xenial or later is strongly recommended as the host system. Some packages may
@@ -955,6 +959,12 @@ and find out where it is mounted, if at all.
 Then run `sudo stcomp.sh -u` with a new configuration file. Specify that device
 for the root file system (no caching, no encryption, any file system type) and
 enter the proper mount point (or any empty directory). This will unlock the device.
+Hopefully. Syncing MD/RAIDs can be stubborn.
+
+#### Pressing Ctrl-C at an input prompt leaves my Ubuntu terminal in a mess
+Unfortunately, this is a
+[known bug](https://lists.gnu.org/archive/html/bug-bash/2014-09/msg00029.html)
+in bash. Apparently, the patch did not yet make it into your Ubuntu distribution.  
 
 ## Missing features
 - GPT/UEFI support
@@ -1047,3 +1057,7 @@ Credits go to the authors and contributors of these documents:
 1. KrisWebDev:
    [_How to change grub command-line (grub shell) keyboard layout?_](http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#751260)
    Ask Ubuntu (forum), 2016-03-28. Retrieved 2016-10-14.
+
+1. Thomas, Mickaël THOMAS:
+   [_read -e does not restore terminal settings correctly when interrupted if a trap is set_](https://lists.gnu.org/archive/html/bug-bash/2014-09/msg00029.html).
+   bug-bash Archives, 2014-09-08. Retrieved 2016-10-19.
