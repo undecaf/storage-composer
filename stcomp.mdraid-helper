@@ -84,7 +84,7 @@ log() {
 #
 read_drive_timeout() {
   smartctl -l scterc $1 \
-    | awk -F ': *| [(]' -e \
+    | awk -F ': *| [(]' \
       'BEGIN { T=-1; } \
        /(Read|Write):\s+[[:digit:]]+/ { if ($2>T) T=$2; } \
        /(Read|Write):\s+Disabled/ { T=0; } \
