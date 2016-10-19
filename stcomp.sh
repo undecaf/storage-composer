@@ -69,6 +69,9 @@ declare -A DEFAULT_MOUNT_OPTIONS=([ext2]=relatime,errors=remount-ro [ext3]=relat
 # Maximum waiting time until a device, file etc. becomes available (in s)
 MAX_WAIT=10
 
+# Regexp for an empty or blank string
+BLANK_RE='^[[:space:]]*$'
+
 
 # --------------------------------------------------------------------------
 
@@ -678,7 +681,7 @@ dev_dirs() {
 #
 uuid_to_devs() {
   if [ "$1" ]; then
-    local DEVS=$(blkid | awk -F ':' -e /$1/' { printf " %s", $1; }')
+    local DEVS=$(blkid | awk -F ':' /$1/' { printf " %s", $1; }')
     echo -n "${DEVS/ /}"
   fi
 }
@@ -1080,7 +1083,7 @@ unlock_devs() {
         sleep 0.5
         ;;
 
-      dm-[1-9]*)
+      dm-[0-9]*)
         echo "Closing mapped LUKS device $DEV"
         sleep 0.5
         cryptsetup luksClose $DEV
@@ -1094,6 +1097,9 @@ unlock_devs() {
           echo 1 >$BC_DIR/set/stop
           sleep 0.5
         fi
+        ;;
+      *)
+        echo "Do not know how to stop $D"
         ;;
     esac
   done
@@ -1310,7 +1316,6 @@ EOF
     done
 
     # Authorization is required if any file system is encrypted
-    BLANK_RE='^ *$'
     if [[ "${ENCRYPTED[@]}" =~ $BLANK_RE ]]; then
       AUTH_METHOD=
       KEY_FILE=
@@ -1692,15 +1697,12 @@ DEVS_TO_UNLOCK="$DEVS_TO_UNLOCK $(sorted_unique ${CACHED_BY[@]})"
 DEVS_TO_UNLOCK=${DEVS_TO_UNLOCK//\/dev\//}
 
 cleanup $DEVS_TO_UNLOCK
-[ -d $TARGET -a -n "$(ls -A $TARGET)" ] && die "$TARGET is not empty"
+[ -d $TARGET ] && [ -n "$(ls -A $TARGET)" ] && die "$TARGET is not empty"
 
 if [ "$UNMOUNT_GOAL" ]; then
   echo $'\n'"Storage unmounted from $TARGET"
   exit
 fi
-
-# Prepare for file system testing
-install_pkg -t fio
 
 
 # ---------------------- Set up the file system ----------------------------
@@ -2002,7 +2004,7 @@ mkdir -p $TARGET/etc
 echo -e "$FSTAB" > $TARGET/etc/fstab
 
 # Boot-time decryption
-if [ "${ENCRYPTED[*]}" ]; then
+if [[ ! "${ENCRYPTED[*]}" =~ $BLANK_RE ]]; then
   # Copy keyscript to initramfs
   mkdir -p ${TARGET}$(dirname $KEY_SCRIPT)
   cp -f "$HERE/${SCRIPT_NAME}.keyscript" ${TARGET}$KEY_SCRIPT
@@ -2015,7 +2017,7 @@ if [ "${ENCRYPTED[*]}" ]; then
 fi
 
 # udev rule for RAID arrays
-if [ "${RAID_LEVELS[*]}" ]; then
+if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]]; then
   # Add udev rule to adjust drive/driver error timeouts
   mkdir -p $TARGET/etc/udev/rules.d
   cp -f "$HERE/${SCRIPT_NAME}.mdraid-rule" ${TARGET}$RAID_RULE_FILE
@@ -2030,7 +2032,7 @@ if [ "${RAID_LEVELS[*]}" ]; then
 fi
 
 # Standard bcache udev rule seems to fail sometimes for RAIDs, therefore ...
-if [ -n "${RAID_LEVELS[*]}" -a -n "${CACHED_BY[*]}" ]; then
+if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_RE ]]; then
   # Override default udev rule with custom rule
   BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
   mkdir -p $TARGET/etc/udev/rules.d
@@ -2066,6 +2068,7 @@ if chroot $TARGET /bin/bash -l <<- EOF
 	export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
 	# Upgrade to the latest kernel version
+	echo 'Upgrading to the latest kernel version'
 	apt-get -y -q update
 	apt-get -y -q upgrade
 	apt-get -y -q --reinstall --no-install-recommends install linux-image-generic linux-headers-generic linux-tools-generic
@@ -2075,13 +2078,13 @@ if chroot $TARGET /bin/bash -l <<- EOF
 	echo -e 'PRETTY_HOSTNAME=$TARGET_HOSTNAME\nICON_NAME=computer\nCHASSIS=desktop\nDEPLOYMENT=production' > /etc/machine-info
 	sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
 
-  # Install minimum required packages
-  echo 'Installing additional packages'
+  # Install required packages
+  echo 'Installing required packages'
   locale-gen $LANG
   apt-get -y -q --no-install-recommends install \
-    network-manager nano man-db plymouth-themes console-data console-setup bash-completion $(sorted_unique $TARGET_PKGS)
+    network-manager nano man-db plymouth-themes console-data console-setup bash-completion fio $(sorted_unique $TARGET_PKGS)
     
-	# Configure locale, timezone, console and keyboard (crude but working)
+  # Configure locale, timezone, console and keyboard (crude but working)
   update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
 
   cp -fp /tmp/{localtime,timezone} /etc
