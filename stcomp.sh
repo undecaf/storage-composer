@@ -120,7 +120,7 @@ breakpoint() {
   echo $'\n'"$1"
   if [ "$DEBUG_MODE" ]; then
     local REPLY
-    read -erp $'\n[Enter] to continue or Ctrl-C to abort: '
+    read -rp $'\n[Enter] to continue or Ctrl-C to abort: '
   fi
 }
 
@@ -186,7 +186,7 @@ on_exit() {
 #   $BATCH_MODE  non-empty if running not interactively
 #
 read_text() {
-  [ "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
+  [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local REPLY
   local DONE=
@@ -222,7 +222,7 @@ read_text() {
 #   $BATCH_MODE  non-empty if running not interactively
 #
 read_int() {
-  [ "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
+  [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local REPLY
   local DONE=
@@ -281,13 +281,18 @@ read_passphrase() {
   # Repeat only if the passphrase expires while in this loop
   while true; do
     ID=$(keyctl search @u user "$PW_DESC" 2>/dev/null)
-    [ -z "$ID" -a -n "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
+
+    # In batch mode, use the cached passphrase if available
+    if [ "$BATCH_MODE" ]; then
+      [ "$ID" ] && break
+      die "Cannot enter '$1' in batch mode"
+    fi
 
     local PROMPT="  $1"
     [ "$ID" ] && PROMPT="$PROMPT (empty for previous one)"
 
     # Prompt for passphrase
-    read -ersp "$PROMPT: "
+    read -rsp "$PROMPT: "
     echo '' 1>&2
 
     # Empty response, and cached passphrase available?
@@ -296,12 +301,12 @@ read_passphrase() {
     # Prompt for verification if so requested
     while [ "$2" ]; do
       PW="$REPLY"
-      read -ersp '  Repeat passphrase: '
+      read -rsp '  Repeat passphrase: '
       echo '' 1>&2
       [ "$REPLY" = "$PW" ] && break
 
       echo '  *** Passphrases do not match ***' 1>&2
-      read -ersp "$PROMPT: "
+      read -rsp "$PROMPT: "
       echo '' 1>&2
     done
 
@@ -342,7 +347,7 @@ read_login() {
 
   while true; do
     while true; do
-      read -ersp "$PROMPT"
+      read -rsp "$PROMPT"
       echo '' 1>&2
       [ "$REPLY" ] && break
       [ -n "$1" ] && echo -n "$1" && return
@@ -350,7 +355,7 @@ read_login() {
     done
     PREV_REPLY="$REPLY"
 
-    read -ersp '  Repeat passphrase: '
+    read -rsp '  Repeat passphrase: '
     echo '' 1>&2
     [ "$PREV_REPLY" = "$REPLY" ] && break
     echo '  *** Passphrases do not match ***' 1>&2
@@ -374,7 +379,7 @@ read_login() {
 #   $BATCH_MODE  non-empty if running not interactively
 #
 read_filepath() {
-  [ "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
+  [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local DEFAULT=$2
   local REPLY
@@ -420,7 +425,7 @@ read_filepath() {
 #   $BATCH_MODE  non-empty if running not interactively
 #
 read_dirpaths() {
-  [ "$BATCH_MODE" ] && die "Cannot respond to '$1' in batch mode"
+  [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local DEFAULT=$2
   local REPLY=
@@ -623,7 +628,7 @@ new_path() {
 #   dev_dirs, contains_word
 #
 available_devs() {
-  local AVAILABLE_DEVS=$(blkid -po device /dev/sd?[1-9]*)
+  local AVAILABLE_DEVS=$(ls /dev/sd?[1-9]*)
   
   if [ "$1" ]; then
     local D
@@ -1533,7 +1538,7 @@ EOF
 
   if [ "$INSTALL_GOAL" ]; then
     # Get host's package repository
-    REPO=$(grep -m 1 -o -E 'https?://.*\.(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
+    REPO=$(grep -m 1 -o -E 'https?://.*(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
       || die 'No Ubuntu repository URL found in /etc/apt/sources.list'
 
     # Attempting to cache the boot file system?
@@ -1553,7 +1558,7 @@ EOF
     if [ "$BATCH_MODE" ]; then
       die 'Invalid configuration'
     else
-      read -erp $'\nInvalid configuration, [Enter] to edit: '
+      read -rp $'\nInvalid configuration, [Enter] to edit: '
       continue
     fi
   fi
@@ -1628,7 +1633,7 @@ EOF
       echo "*** WARNING: existing data on ${ALL_DEVS// /, } will be overwritten! ***"$'\n'
       [ "$INSTALL_GOAL" ] && echo "*** WARNING: MBR on ${BOOT_DEVS// /, } will be overwritten! ***"$'\n'
     fi
-    confirmed "About to $FRIENDLY_GOAL this configuration -- proceed" y || continue
+    confirmed "About to $FRIENDLY_GOAL this configuration -- proceed" "$BATCH_MODE" || continue
   fi
 
   # Save configuration
