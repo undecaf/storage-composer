@@ -1754,12 +1754,16 @@ for (( I=0; I<$NUM_FS; I++ )); do
       if [ ${RAID_LEVELS[$I]} -eq 1 -a -n "$SSD_DEVS" -a -n "$HDD_DEVS" ]; then
         # Mixed SSD/HDD RAID1 array, prefer reading from SSD
         echo "Will prefer reading from ${SSD_DEVS// /, }, writing-behind to ${HDD_DEVS// /, }"
-        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS $SSD_DEVS --write-behind --bitmap=internal --write-mostly $HDD_DEVS
+        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} \
+          --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS $SSD_DEVS \
+          --write-behind --bitmap=internal --write-mostly $HDD_DEVS
 
       else
         # SSD-only/HDD-only array
-        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS ${STORAGE_DEVS[$I]}
+        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} \
+          --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS ${STORAGE_DEVS[$I]}
       fi
+      echo ''
 
     elif [ "$MOUNT_GOAL" ]; then
       echo "Assembling RAID $MD_DEV from components ${STORAGE_DEVS[$I]}"
@@ -1979,10 +1983,13 @@ fi
 
 breakpoint "Target file system mounted at $TARGET, about to install a minimal $DISTRIB_DESCRIPTION"
 
+# Install a minimal Ubuntu, plus debconf-utils for debconf-get-selections
+# (needs 'universe' which might not be a package repository on the host)  
 install_pkg debootstrap
 debootstrap \
   --arch $(dpkg --print-architecture) \
-  --include language-pack-${LANG%%_*} \
+  --components main,universe \
+  --include language-pack-${LANG%%_*},debconf-utils \
   $DISTRIB_CODENAME $TARGET $REPO
 
 breakpoint "Minimal $DISTRIB_DESCRIPTION installed, about to configure target system"
@@ -2049,12 +2056,12 @@ if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_
   initramfs_hook bcache-helper -c $BCACHE_RULE_FILE -c $BCACHE_HELPER_FILE -c $BCACHE_HINT_FILE -x $(which bcache-super-show)
 fi
 
-# Copy debconf settings from host
-install_pkg debconf-utils
+# Save certain host debconf settings
 mkdir -p ${TARGET}/tmp
 DEBCONF=/tmp/debconf-selections
 on_exit "Removing ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
-debconf-get-selections | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
+${TARGET}/usr/bin/debconf-get-selections \
+  | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
 cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
 
 # chroot into the installation target
@@ -2078,46 +2085,47 @@ if chroot $TARGET /bin/bash -l <<- EOF
 	echo -e 'PRETTY_HOSTNAME=$TARGET_HOSTNAME\nICON_NAME=computer\nCHASSIS=desktop\nDEPLOYMENT=production' > /etc/machine-info
 	sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
 
-  # Install required packages
-  echo 'Installing required packages'
-  locale-gen $LANG
-  apt-get -y -q --no-install-recommends install \
-    network-manager nano man-db plymouth-themes console-data console-setup bash-completion fio $(sorted_unique $TARGET_PKGS)
-    
-  # Configure locale, timezone, console and keyboard (crude but working)
-  update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
+	# Install required packages
+	echo 'Installing required packages'
+	locale-gen $LANG
+	apt-get -y -q --no-install-recommends install \
+	  network-manager nano man-db plymouth-themes \
+	  console-data console-setup bash-completion fio grub-pc os-prober \
+	  $(sorted_unique $TARGET_PKGS)
+	  
+	# Configure locale, timezone, console and keyboard (crude but working)
+	update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
 
-  cp -fp /tmp/{localtime,timezone} /etc
-  cp -fp /tmp/default/{keyboard,console-setup} /etc/default
-  cp -fpR /tmp/console-setup /etc
-  
-  debconf-set-selections $DEBCONF
-  for P in tzdata keyboard-configuration console-data console-setup; do
-    dpkg-reconfigure -f noninteractive \$P
-  done
+	# Needed in addition to debconf-set-selections
+	cp -fp /tmp/{localtime,timezone} /etc || true
+	cp -fp /tmp/default/{keyboard,console-setup} /etc/default
+	cp -fpR /tmp/console-setup /etc
+	
+	debconf-set-selections $DEBCONF
+	for P in tzdata keyboard-configuration console-data console-setup; do
+	  dpkg-reconfigure -f noninteractive \$P
+	done
 
-  # Create user
-  echo "Creating user '$TARGET_USERNAME'"
-  useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
-  echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
+	# Create user
+	echo "Creating user '$TARGET_USERNAME'"
+	useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
+	echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
 
-	# Install and configure boot loader
-	DEBIAN_FRONTEND=noninteractive apt-get -y -q --no-install-recommends install grub-pc os-prober
-
-  # GRUB keyboard layout not localized because of questionable benefit, see these links for instructions:
-  # http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#answer-751260
-  # https://wiki.archlinux.org/index.php/Talk:GRUB#Custom_keyboard_layout
+	# Configure boot loader
+	# GRUB keyboard layout not localized because of questionable benefit, see these links for instructions:
+	# http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#answer-751260
+	# https://wiki.archlinux.org/index.php/Talk:GRUB#Custom_keyboard_layout
 
 	cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX locale=\${LANG%%.*} bootkbd=\$LC console-setup/layoutcode=\$LC"
 GRUB_GFXMODE=1024x768
 XEOF
 
-  # Handle an encrypted boot partition
-  if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
-    # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
-    echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
-  fi
+	# Handle an encrypted boot partition
+	if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
+	  # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
+	  echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+	fi
 
 	# Honor debug options
 	case "$DEBUG_MODE" in
