@@ -2095,7 +2095,7 @@ fi
 # Copy test script
 mkdir -p ${TARGET}/usr/local/sbin
 cp -f "$TEST_SCRIPT" ${TARGET}/usr/local/sbin
-chmod 755 "${TARGET}/usr/local/sbin/$(basename '$TEST_SCRIPT')"
+chmod 755 "${TARGET}/usr/local/sbin/$(basename "$TEST_SCRIPT")"
 
 # Save certain host debconf settings
 mkdir -p ${TARGET}/tmp

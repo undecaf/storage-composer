@@ -153,7 +153,7 @@ $3
     # Calculate file size based on free space in this file system 
     FREE=$(df --output=avail --block-size=100 $MP | tail -n 1)
     FREE=$((FREE * FREE_SPACE_USAGE / ${MOUNT_POINTS[$MP]} / NUM_JOBS / 1024))K
-    LABEL="$2_$MP"
+    LABEL="$2 $MP"
     
     echo -n \
 "
@@ -175,7 +175,7 @@ size=$FREE
     FREE=$(lsblk --output SIZE --bytes --noheadings $DEV)
     FREE=$((FREE / 1024 * FREE_SPACE_USAGE / NUM_JOBS / 100))K
 
-    LABEL="$2_$DEV"
+    LABEL="$2 $DEV"
     
     echo -n \
 "
@@ -237,7 +237,7 @@ Usage: $SCRIPT [-s <percentage>] [-t <runtime>] [-p <num-jobs>]
   is specified then $DEFAULT_CONFIG_FILE is used by default.
 
   Options:
-    -s  Size of the test files in percent of free space of the file
+    -s  Size of the test files in percent of free space of each file
         system under test. <percentage> must be in the range 1..95.
         Defaults to 10 if omitted.
     -t  Runtime limit in seconds unless suffixed with 'm' or 'h'.
@@ -285,7 +285,7 @@ while getopts hcs:t:p: OPT; do
       ;;
 
     p)
-      [[ ! "$OPTARG" =~ $NUMERIC_RE ]] || [ $OPTARG -lt 1-o $OPTARG -gt 100 ] \
+      [[ ! "$OPTARG" =~ $NUMERIC_RE ]] || [ $OPTARG -lt 1 -o $OPTARG -gt 100 ] \
         && usage "Invalid number: -$OPT $OPTARG"
       NUM_JOBS=$OPTARG
       ;;
