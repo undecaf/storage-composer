@@ -30,8 +30,8 @@
 # ------------------------------ Configuration -----------------------------
 
 # This script without file extension
-HERE="$(dirname $(readlink -e $0))"
-SCRIPT_NAME=$(basename -s .sh ${0})
+HERE=$(dirname $(readlink -e $0))
+SCRIPT_NAME=$(basename -s .sh $0)
 
 # Saved configuration
 DEFAULT_CONFIG_FILE=$HOME/.${SCRIPT_NAME}.conf
@@ -153,12 +153,14 @@ die() {
 # Arguments:
 #   $1           description of command group, printed at stdout before
 #                command group runs
-#   $2, $3, ...  command group to be run on exit
+#   $2, $3, ...  group of commands to be run on exit
 #
+EXIT_SCRIPT=
+
 on_exit() {
   if [ ! -f "$EXIT_SCRIPT" ]; then
     # Prepare the cleanup script
-    EXIT_SCRIPT=$(mktemp)
+    EXIT_SCRIPT=$(mktemp --tmpdir)
     trap "{ set +e +x; echo \$'\nStarting cleanup'; tac $EXIT_SCRIPT | . /dev/stdin; rm $EXIT_SCRIPT; exit; }" EXIT
     echo "echo 'End of cleanup'" >> $EXIT_SCRIPT
   fi
@@ -314,7 +316,7 @@ read_passphrase() {
     done
 
     # Save (verified) passphrase to keyring
-    ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u)
+    ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u 2>/dev/null)
 
     # Repeat if passphrase expired while in this loop
     keyctl timeout $ID $PW_EXPIRATION 2>/dev/null && break
@@ -673,8 +675,8 @@ dev_dirs() {
 
 # --------------------------------------------------------------------------
 
-# Prints the block device(s) that belong to the specified UUID to stdout.
-# For RAID UUIDs, this can be several components.
+# Prints to stdout the canonical names of the block device(s) that belong
+# to the specified UUID. For RAID UUIDs, this can be several components.
 #
 # Arguments:
 #   $1  UUID
@@ -682,7 +684,19 @@ dev_dirs() {
 uuid_to_devs() {
   if [ "$1" ]; then
     local DEVS=$(blkid | awk -F ':' /$1/' { printf " %s", $1; }')
-    echo -n "${DEVS/ /}"
+    local CANONICAL
+    local D
+    
+    if [ "$DEVS" ]; then
+      for D in $DEVS; do
+        CANONICAL="$CANONICAL $(readlink -e $D)"
+      done
+    else
+      # Swap space is not picked up by lsblk
+      CANONICAL=$(readlink -e /dev/disk/by-uuid/$1)
+    fi
+    
+    echo -n "${CANONICAL/ /}"
   fi
 }
 
@@ -980,7 +994,6 @@ Usage: $SCRIPT -b|-m [-i] [-y] [-d] [<config-file>]
   is specified then $DEFAULT_CONFIG_FILE is used by default.
 
   Options:
-    -h  Displays this text and exits.
     -b  (Re-)Builds the target storage and mounts it at the mount
         point specified in <config-file>. Host devices required for
         chrooting are also mounted. Existing data on the underlying
@@ -997,6 +1010,7 @@ Usage: $SCRIPT -b|-m [-i] [-y] [-d] [<config-file>]
     -d  Debug mode: pauses the script at various stages and makes the
         target system boot verbosely. Repeating this option increases
         the debugging level.
+    -h  Displays this text and exits.
 
 EOF
   exit $EXIT_CODE
@@ -1014,25 +1028,27 @@ EOF
 #                    of configuration, cache devices at the end
 #   $TARGET          mount point of target file system
 # Calls:
-#   dev_dirs, unlock_devs
+#   dev_dirs, _unlock_devs
 #
 cleanup() {
   set +e
 
-  # Unmount everything from $TARGET
-  for MP in $(cat /proc/mounts | grep "$TARGET"'[ /]' | cut -d ' ' -f 2 | sort -r); do
-    echo "Unmounting $MP"
-    umount -l $MP
-    sleep 0.5
-  done
+  # Unmount everything from $TARGET if it is a directory
+  if [ -d "$TARGET" ]; then
+    for MP in $(cat /proc/mounts | grep "$TARGET"'[ /]' | cut -d ' ' -f 2 | sort -r); do
+      echo "Unmounting $MP"
+      umount -l $MP
+      sleep 0.5
+    done
+  fi
 
   # Unlock devices recursively
-  unlock_devs $@
+  _unlock_devs $@
 
   set -e
 }
 
-unlock_devs() {
+_unlock_devs() {
   local D
   local DEV
   local MP
@@ -1043,7 +1059,7 @@ unlock_devs() {
     BC_DIR=$BCACHE_DIR
 
     # Unlock any holders first
-    [ "$(/bin/ls -A $HOLDERS_DIR)" ] && unlock_devs $(basename -a $HOLDERS_DIR/*)
+    [ "$(/bin/ls -A $HOLDERS_DIR)" ] && _unlock_devs $(basename -a $HOLDERS_DIR/*)
     
     # Get device path
     case $D in
@@ -1066,7 +1082,7 @@ unlock_devs() {
         while true; do
           echo -n '.'
           # Sync will restart automatically soon
-          echo idle >/sys/block/$D/md/sync_action
+          echo idle >/sys/block/$D/md/sync_action 2>/dev/null
           # Will fail as long as the array is still being sync'ed
           mdadm --stop $DEV 1>&2 2>/dev/null && break
           sleep 3          
@@ -1182,13 +1198,14 @@ CONFIG_FILE="${1:-$DEFAULT_CONFIG_FILE}"
 # Check whether running as root in sudo
 verify_sudo
 
-# Abort and clean up in case of an error
+# Abort and clean up on error
 set -e
 trap cleanup ERR
 
 # Configuration variables
 declare -a STORAGE_DEVS
 declare -a STORAGE_DEVS_UUIDS=()
+declare -a FS_DEVS_UUIDS=()
 declare -a RAID_LEVELS
 declare -a CACHED_BY
 declare -a CACHED_BY_UUIDS=()
@@ -1212,9 +1229,9 @@ while true; do
 
   # ---------------------- Collect configuration info ------------------------
 
-  if [ -z "$SKIP_CONFIG_FILE" -a -f $CONFIG_FILE ]; then
+  if [ -z "$SKIP_CONFIG_FILE" -a -f "$CONFIG_FILE" ]; then
     # Read previous configuration
-    . $CONFIG_FILE
+    . "$CONFIG_FILE"
 
     # Identify storage and caching devices by their UUIDs
     for (( I=0; I<${#STORAGE_DEVS_UUIDS[@]}; I++ )); do
@@ -1486,16 +1503,15 @@ EOF
     ERROR=1
   fi
 
-  # All cache devices non-removable and non-rotational (SSDs)?
+  # Warn if any cache device is removable or rotational
   for D in $CACHE_DEVS; do
     if ! is_ssd $D; then
-      echo "*** Cache device is not an SSD: $D ***" 1>&2
-      ERROR=1
+      echo "*** Cache device $D is not an SSD -- are you sure? ***" 1>&2
     fi
   done
 
   # Root file system must not be a swap FS
-  if [ ${FS_TYPES[0]} = 'swap' ]; then
+  if [ "${FS_TYPES[0]}" = 'swap' ]; then
     echo "*** Root file system must not be a ${FS_TYPES[0]} file system ***" 1>&2
     ERROR=1
   fi
@@ -1508,7 +1524,7 @@ EOF
     fi
   done
  
-  # Multiple swap file systems? Only a warning
+  # Warn if there are multiple swap file systems
   if [[ $(sorted_duplicates ${FS_TYPES[@]}) == *swap* ]]; then
     echo "*** Multiple swap file systems prevent hibernation. Consider using a RAID 0. ***" 1>&2
   fi
@@ -1542,10 +1558,6 @@ EOF
   fi
 
   if [ "$INSTALL_GOAL" ]; then
-    # Get host's package repository
-    REPO=$(grep -m 1 -o -E 'https?://.*(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
-      || die 'No Ubuntu repository URL found in /etc/apt/sources.list'
-
     # Attempting to cache the boot file system?
     if [ "${CACHED_BY[$BOOT_DEV_INDEX]}" ]; then
       echo "*** The /boot file system must not be cached: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
@@ -1557,6 +1569,16 @@ EOF
       echo "*** The /boot file system must not be encrypted using a key file: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
       ERROR=1
     fi
+
+    # Username (and password) specified?
+    if [ ! "$TARGET_USERNAME" ]; then
+      echo '*** Target username is missing ***'
+      ERROR=1
+    fi
+    
+    # Get host's package repository
+    REPO=$(grep -m 1 -o -E 'https?://.*(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
+      || die 'No Ubuntu repository URL found in /etc/apt/sources.list'
   fi
 
   if [ "$ERROR" ]; then
@@ -1642,12 +1664,14 @@ EOF
   fi
 
   # Save configuration
-  [ ! -f $CONFIG_FILE ] && echo "Creating configuration file $CONFIG_FILE"
-  sudo --user=$SUDO_USER truncate -s 0 $CONFIG_FILE
-  for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
+  [ ! -f "$CONFIG_FILE" ] && echo "Creating configuration file '$CONFIG_FILE'"
+  sudo --user=$SUDO_USER truncate -s 0 "$CONFIG_FILE"
+  echo "# StorageComposer configuration file, created by $0" >> "$CONFIG_FILE"
+
+  for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS FS_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
       ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
       AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH; do
-    echo "$(declare -p $V)" >> $CONFIG_FILE
+    echo "$(declare -p $V)" >> "$CONFIG_FILE"
   done
 
   # For encryption, save the LUKS key to the keyring
@@ -1955,21 +1979,33 @@ for MP in $(sorted_unique ${MOUNT_POINTS[@]}); do
   done
 done
 
-# Update UUIDs in configuration file after build
-if [ "$BUILD_GOAL" ]; then
-  declare -a STORAGE_DEVS_UUIDS
-  declare -a CACHED_BY_UUIDS
 
-  for (( I=0; I<$NUM_FS; I++ )); do
-    # Use only the first device (if it is a RAID then all components have the same UUID)
-    VD=(${STORAGE_DEVS[$I]})
-    STORAGE_DEVS_UUIDS[$I]=$(dev_to_uuid $VD)
-    CACHED_BY_UUIDS[$I]=$(dev_to_uuid ${CACHED_BY[$I]})
-  done
+# Update UUIDs in configuration file
+declare -a STORAGE_DEVS_UUIDS
+declare -a FS_DEVS_UUIDS
+declare -a CACHED_BY_UUIDS
 
-  echo "$(declare -p STORAGE_DEVS_UUIDS)" >> $CONFIG_FILE
-  echo "$(declare -p CACHED_BY_UUIDS)" >> $CONFIG_FILE
-fi
+for (( I=0; I<$NUM_FS; I++ )); do
+  # Use only the first device (if it is a RAID then all components have the same UUID)
+  VD=(${STORAGE_DEVS[$I]})
+  STORAGE_DEVS_UUIDS[$I]=$(dev_to_uuid $VD)
+  CACHED_BY_UUIDS[$I]=$(dev_to_uuid ${CACHED_BY[$I]})
+  FS_DEVS_UUIDS[$I]=$(dev_to_uuid ${FS_DEVS[$I]})
+done
+
+echo "$(declare -p STORAGE_DEVS_UUIDS)" >> "$CONFIG_FILE"
+echo "$(declare -p FS_DEVS_UUIDS)" >> "$CONFIG_FILE"
+echo "$(declare -p CACHED_BY_UUIDS)" >> "$CONFIG_FILE"
+
+# Create test script
+TEST_SCRIPT=$(basename "$CONFIG_FILE")
+TEST_SCRIPT="$(dirname '$CONFIG_FILE')/${TEST_SCRIPT%.*}.test"
+[ ! -f "$TEST_SCRIPT" ] && echo "Creating test script '$TEST_SCRIPT'"
+sudo --user=$SUDO_USER truncate -s 0 "$TEST_SCRIPT"
+echo '#!/bin/bash' >> "$TEST_SCRIPT"
+cat "$CONFIG_FILE" >> "$TEST_SCRIPT"
+cat "$HERE/${SCRIPT_NAME}.fio" >> "$TEST_SCRIPT"
+chmod 755 "$TEST_SCRIPT"
 
 if [ ! "$INSTALL_GOAL" ]; then
   # Mount the target file system for chroot-ing
@@ -2026,7 +2062,7 @@ fi
 # udev rule for RAID arrays
 if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]]; then
   # Add udev rule to adjust drive/driver error timeouts
-  mkdir -p $TARGET/etc/udev/rules.d
+  mkdir -p ${TARGET}$(dirname $RAID_RULE_FILE)
   cp -f "$HERE/${SCRIPT_NAME}.mdraid-rule" ${TARGET}$RAID_RULE_FILE
   chmod 644 ${TARGET}$RAID_RULE_FILE
 
@@ -2042,7 +2078,7 @@ fi
 if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_RE ]]; then
   # Override default udev rule with custom rule
   BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
-  mkdir -p $TARGET/etc/udev/rules.d
+  mkdir -p ${TARGET}$(dirname $BCACHE_RULE_FILE)
   cp -f "$HERE/${SCRIPT_NAME}.bcache-rule" ${TARGET}$BCACHE_RULE_FILE
   chmod 644 ${TARGET}$BCACHE_RULE_FILE
 
@@ -2055,6 +2091,11 @@ if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_
 
   initramfs_hook bcache-helper -c $BCACHE_RULE_FILE -c $BCACHE_HELPER_FILE -c $BCACHE_HINT_FILE -x $(which bcache-super-show)
 fi
+
+# Copy test script
+mkdir -p ${TARGET}/usr/local/sbin
+cp -f "$TEST_SCRIPT" ${TARGET}/usr/local/sbin
+chmod 755 "${TARGET}/usr/local/sbin/$(basename '$TEST_SCRIPT')"
 
 # Save certain host debconf settings
 mkdir -p ${TARGET}/tmp

@@ -1,0 +1,423 @@
+#!/bin/bash
+
+# Template for automated storage testing
+# ======================================
+#
+# A template for automated testing of storage built by StorageComposer.
+# Whenever building a target, Storage Composer creates a runnable test
+# script for the target configuration.
+#
+# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+#
+# This file is part of "StorageComposer".
+#
+# StorageComposer is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# StorageComposer is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with StorageComposer.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# ------------------------------ Configuration -----------------------------
+
+# Number of clones of each job that run in parallel
+NUM_JOBS=3
+
+# Maximum percentage (in %) of free file system space to use for tests
+FREE_SPACE_USAGE=10
+
+# All files created by this script start with this prefix
+FILE_PREFIX=__$(basename $0)
+
+# Temporary fio job file
+JOB_FILE=${TMPDIR:-/tmp}/${FILE_PREFIX}.job
+
+# Number of tests, i.e. run_test() calls. Adjust this for custom tests!
+NUM_TESTS=2
+
+
+# --------------------------------------------------------------------------
+
+# Verifies that this script is run by root.
+#
+verify_root() {
+  if [ $(id -u) -ne 0 ]; then
+    echo 'This script can only be run by root.' 1>&2
+    exit 1
+  fi
+}
+
+
+# --------------------------------------------------------------------------
+
+# Installs the specified package(s) unless already installed.
+#
+# Arguments:
+#   $1, $2, $3, ...  package name(s)
+#
+install_pkg() {
+  for P; do
+    dpkg -L "$P" > /dev/null 2>&1 || apt-get --no-install-recommends -q -y install "$P"
+  done
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints a message to sterr and terminates this script with the specified 
+# exit code.
+#
+# Arguments:
+#   $1  error message
+#   $2  exit code (optional, defaults to 2)
+#
+die() {
+  local EXIT_CODE=2
+  [ "$2" ] && EXIT_CODE="$2"
+  echo $'\n'"****** FATAL: $1 ******" 1>&2
+  exit $EXIT_CODE
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints to stdout the canonical names of the block device(s) that belong
+# to the specified UUID. For RAID UUIDs, this can be several components.
+#
+# Arguments:
+#   $1  UUID
+#
+uuid_to_devs() {
+  if [ "$1" ]; then
+    local DEVS=$(blkid | awk -F ':' /$1/' { printf " %s", $1; }')
+    local CANONICAL
+    local D
+    
+    if [ "$DEVS" ]; then
+      for D in $DEVS; do
+        CANONICAL="$CANONICAL $(readlink -e $D)"
+      done
+    else
+      # Swap space is not picked up by lsblk
+      CANONICAL=$(readlink -e /dev/disk/by-uuid/$1)
+    fi
+    
+    echo -n "${CANONICAL/ /}"
+  fi
+}
+
+
+# --------------------------------------------------------------------------
+
+# Writes sections to the fio job file that run the specified test on each
+# subvolume of each file system and on each swap device.
+# 
+# Arguments:
+#   $1                 test description
+#   $2                 test identifier (used as prefix of section names)
+#   $3                 body (only) of the [global] section, defines the
+#                      test job for each mount point and each swap device
+#   $MOUNT_POINTS      associative array, mapping each mount point to the
+#                      number of subvolumes sharing the same device
+#                      systems and subvolumes
+#   $SWAP_DEVS         space-delimited list of swap devices
+#   $NUM_JOBS          number of clones of each job
+#   $FREE_SPACE_USAGE  max. percentage of free file system space to use
+#   $JOB_FILE          fio job file
+# Calls:
+#   uuid_to_devs
+#
+function run_test() {
+  local MP
+  local DEV
+  local FREE
+  local LABEL
+  local STONEWALL=stonewall
+  
+  # Define the test
+  echo -n \
+"
+[global]
+$3
+" >> $JOB_FILE
+
+  # Run the test at the current mount point of each subvolume of each file system
+  for MP in ${!MOUNT_POINTS[*]}; do
+    # Calculate file size based on free space in this file system 
+    FREE=$(df --output=avail --block-size=100 $MP | tail -n 1)
+    FREE=$((FREE * FREE_SPACE_USAGE / ${MOUNT_POINTS[$MP]} / NUM_JOBS / 1024))K
+    LABEL="$2_$MP"
+    
+    echo -n \
+"
+[$LABEL]
+new_group
+description=$MP - $1
+directory=$MP
+size=$FREE
+" >> $JOB_FILE
+
+    # Wait until all jobs of the previous test are finished
+    echo "$STONEWALL" >> $JOB_FILE
+    STONEWALL=
+  done
+  
+  # Run the test on each swap device, leave the superblocks intact
+  for DEV in $SWAP_DEVS; do
+    # Calculate "file" size based on device size
+    FREE=$(lsblk --output SIZE --bytes --noheadings $DEV)
+    FREE=$((FREE / 1024 * FREE_SPACE_USAGE / NUM_JOBS / 100))K
+
+    LABEL="$2_$DEV"
+    
+    echo -n \
+"
+[$LABEL]
+new_group
+description=$DEV - $1
+filename=$DEV
+size=$FREE
+offset=1M
+" >> $JOB_FILE
+  done
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints usage information and an optional error message to stdout or stderr
+# and exits with error code 0 or 1, respectively.
+#
+# Arguments:
+#   $1  (optional) error message: if specified then it is printed, and all
+#       output is sent to stderr;  otherwise output goes to stdout.
+#
+usage() {
+  local SCRIPT=$(basename $0)
+  local REDIR=
+  local EXIT_CODE=0
+
+  if [ -n "$1" ]; then
+    cat >&2 <<- EOF
+
+*** $1 ***
+EOF
+    REDIR=">&2"
+    EXIT_CODE=1
+  fi
+
+  eval "cat $REDIR" <<- EOF
+
+This script runs several test suites on a storage system built by
+StorageComposer. Each suite consists of a particular test running in 
+parallel on all subvolumes, file systems and swap devices which were
+built for this storage system. Custom test suites can be added, see
+the source of this script.
+
+Files created during the tests remain on subvolumes and file systems
+until running this script with argument '-c'.
+
+The 'Flexible I/O Tester' (fio) is used for testing. Please refer
+to the fio(1) manpage for detailed documentation or see here:
+https://github.com/axboe/fio
+
+Usage: $SCRIPT [-s <percentage>] [-t <runtime>] [-p <num-jobs>]
+       $SCRIPT -c
+       $SCRIPT -h
+
+  <config-file> describes the target storage and can be created and
+  edited interactively prior to any other action. If no <config-file>
+  is specified then $DEFAULT_CONFIG_FILE is used by default.
+
+  Options:
+    -s  Size of the test files in percent of free space of the file
+        system under test. <percentage> must be in the range 1..95.
+        Defaults to 10 if omitted.
+    -t  Runtime limit in seconds unless suffixed with 'm' or 'h'.
+        If omitted then all tests are run to completion. This may take
+        very long.
+    -p  Number of parallel test runs per subvolume, file system and swap
+        device (1..100). Defaults to 3.
+    -c  Cleans up: removes all files created during testing, does not
+        run any tests.
+    -h  Displays this text and exits.
+
+EOF
+  exit $EXIT_CODE
+}
+
+
+# ---------------------------- Script starts here --------------------------
+
+# Abort on error
+set -e
+
+# Process command line arguments
+NUMERIC_RE='^[[:digit:]]+$'
+TIME_RE='^([[:digit:]]+)(|s|m|min|h|d)$'
+declare -A TIME_UNITS
+TIME_UNITS=([s]=1 [m]=60 [min]=60 [h]=3600 [d]=86400)
+RUNTIME=
+CLEANUP=
+
+while getopts hcs:t:p: OPT; do
+  case "$OPT" in
+    s)
+      [[ ! "$OPTARG" =~ $NUMERIC_RE ]] || [ $OPTARG -lt 1 -o $OPTARG -gt 95 ] \
+        && usage "Invalid size: -$OPT $OPTARG"
+      FREE_SPACE_USAGE=$OPTARG
+      ;;
+
+    t)
+      [[ ! "$OPTARG" =~ $TIME_RE ]] \
+        && usage "Invalid time: -$OPT $OPTARG"
+      # Calculate runtime per test as needed for fio (always in seconds)
+      TIME_UNIT=1
+      [ "${BASH_REMATCH[2]}" ] && TIME_UNIT=${TIME_UNITS[${BASH_REMATCH[2]}]}
+      RUNTIME=$(( ${BASH_REMATCH[1]} * TIME_UNIT / NUM_TESTS ))s
+      ;;
+
+    p)
+      [[ ! "$OPTARG" =~ $NUMERIC_RE ]] || [ $OPTARG -lt 1-o $OPTARG -gt 100 ] \
+        && usage "Invalid number: -$OPT $OPTARG"
+      NUM_JOBS=$OPTARG
+      ;;
+
+    c)
+      CLEANUP=1
+      break
+      ;;
+
+    h)
+      usage
+      ;;
+
+    \?)
+      usage "Unknown option: -$OPT"
+      ;;
+  esac
+done
+
+# Remove parsed options
+shift $(($OPTIND-1))
+
+# Check whether running as root
+verify_root
+
+
+# ------------------------------- Preparation ------------------------------
+
+# Find the current mount points of all file systems and subvolumes,
+# irrespectively of MOUNT_POINTS
+unset MOUNT_POINTS
+
+# Maps each mount point to the number of subvolumes sharing the same device
+# This is needed for calculating the free space of multi-volume file systems
+declare -A MOUNT_POINTS
+
+for UUID in ${FS_DEVS_UUIDS[*]}; do
+  SUBVOLS=($(findmnt -n -o TARGET /dev/disk/by-uuid/$UUID || true))
+  for MP in ${SUBVOLS[@]}; do
+    MOUNT_POINTS[$MP]=${#SUBVOLS[*]}
+  done
+done
+
+# Anything mounted?
+[ ${#MOUNT_POINTS[*]} -gt 0 ] || die "Target is not mounted"
+
+# Clean up if requested
+if [ "$CLEANUP" ]; then
+  echo 'Cleaning up '${!MOUNT_POINTS[*]}
+  for MP in ${!MOUNT_POINTS[*]}; do
+    rm -f $MP/${FILE_PREFIX}.*
+  done
+  rm -f $JOB_FILE
+  exit
+fi
+
+# Install fio
+install_pkg fio \
+  || die "Cannot install fio, this requires the 'universe' repository"
+
+# Find all/active swap devices of this configuration
+SWAP_DEVS=
+SWAPOFF_DEVS=
+
+for (( I=0; I<${#FS_DEVS_UUIDS[*]}; I++ )); do
+  [ "${FS_TYPES[$I]}" = 'swap' ] || continue
+  DEV=$(uuid_to_devs ${FS_DEVS_UUIDS[$I]})
+  SWAP_DEVS="$SWAP_DEVS $DEV"
+  cat /proc/swaps | grep -q -E '^'$DEV'[[:space:]]' \
+    && SWAPOFF_DEVS="$SWAPOFF_DEVS $DEV"
+done
+SWAPOFF_DEVS=${SWAPOFF_DEVS/ /}
+
+# Deactivate active swap devices of this configuration and reactivate them on exit
+if [ "$SWAPOFF_DEVS" ]; then
+  echo "Deactivating swap space on ${SWAPOFF_DEVS// /, }"
+  trap "echo 'Reactivating swap space on ${SWAPOFF_DEVS// /, }'; swapon $SWAPOFF_DEVS" EXIT
+  swapoff $SWAPOFF_DEVS
+fi
+
+# Global settings for all jobs (unless changed in another [global] section)
+echo -n \
+"[global]
+filename_format=${FILE_PREFIX}.\$jobnum.\$filenum
+group_reporting
+numjobs=$NUM_JOBS
+verify_state_save=0
+" > $JOB_FILE
+
+[ "$RUNTIME" ] && echo -n \
+"time_based
+runtime=$RUNTIME
+" >> $JOB_FILE
+
+
+# ---------------------------------- Tests --------------------------------
+
+# The most basic form of data verification. Write the device randomly
+# in 4K chunks, then read it back and verify the contents.
+# Taken from fio examples, see
+# https://github.com/axboe/fio/blob/master/examples/basic-verify.fio
+run_test 'basic data verification' 'verify' \
+"rw=randwrite
+bs=4k
+direct=1
+ioengine=libaio
+iodepth=16
+verify=crc32c"
+
+# Try to mimic the Intel IOMeter File Server Access Pattern:
+# test 80% reads/20% writes with varying block sizes.
+# Taken from fio examples, see
+# https://github.com/axboe/fio/blob/master/examples/iometer-file-access-server.fio
+run_test 'mostly-read with varying block sizes' 'mostly-read' \
+"rw=randrw
+bssplit=512/10:1k/5:2k/5:4k/60:8k/2:16k/4:32k/4:64k/10
+rwmixread=80
+direct=1
+ioengine=libaio
+iodepth=10"
+
+
+# v-v-v-v-v-v-v-v-v-v-v-v-v-v- Begin custom tests -v-v-v-v-v-v-v-v-v-v-v-v-v
+
+# For each custom test, insert the following function call in this section
+# (see function run_test() for details) and increase variable NUM_TESTS
+# accordingly:
+#   run_test <description> <unique-identifier> <global-section-body>
+
+# ^-^-^-^-^-^-^-^-^-^-^-^-^-^-- End custom tests --^-^-^-^-^-^-^-^-^-^-^-^-^
+
+
+# Run the tests defined above
+fio $JOB_FILE
+rm $JOB_FILE
