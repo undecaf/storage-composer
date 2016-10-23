@@ -2000,7 +2000,7 @@ echo "$(declare -p CACHED_BY_UUIDS)" >> "$CONFIG_FILE"
 
 # Create test script
 TEST_SCRIPT=$(basename "$CONFIG_FILE")
-TEST_SCRIPT="$(dirname '$CONFIG_FILE')/${TEST_SCRIPT%.*}.test"
+TEST_SCRIPT="$(dirname '$CONFIG_FILE')/${TEST_SCRIPT%.*}-test.sh"
 [ ! -f "$TEST_SCRIPT" ] && echo "Creating test script '$TEST_SCRIPT'"
 sudo --user=$SUDO_USER truncate -s 0 "$TEST_SCRIPT"
 echo '#!/bin/bash' >> "$TEST_SCRIPT"

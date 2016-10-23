@@ -1,25 +1,24 @@
 # StorageComposer
 
 ## Purpose
-A shell script for creating and managing disk storage under Ubuntu, from
-simple (single partition) to complex (multiple drives/partitions, 
-various file systems, encryption, RAID and SSD caching in almost any combination).
-
-The script can also install a minimal Ubuntu system and make the storage bootable.
+- Creates and manages disk storage under Ubuntu, from simple (single partition)
+  to complex (multiple drives/partitions, various file systems, encryption, RAID
+  and SSD caching in almost any combination).
+- Installs a (minimal) Ubuntu onto the storage and makes it bootable.
 
 This project started as a simple helper script for setting up encrypted storage
-for several PCs. I can't remember how it got out of control...
+for several PCs. Somehow it got out of control...
 
 
 ## :warning: WARNING WARNING WARNING :warning:
-Please use this script only if your are familiar with a Linux shell, disk
+Please use this tool only if your are familiar with a Linux shell, disk
 partitioning, file systems and with the terms and concepts mentioned in this
 document.
 
-StorageComposer might do things not intended by you, or it might even malfunction
-in a way that corrupts your data, therefore:
+StorageComposer might do things not intended by you that way, or it might even
+malfunction badly and corrupt your data, therefore:
 
-##### :warning: Please backup your data before you start using StorageComposer.
+##### :warning: Please backup your data before you start using this tool.
 ##### :warning: Test thoroughly before you trust your storage.
 
 ## Proceed at your own risk
@@ -34,6 +33,8 @@ in a way that corrupts your data, therefore:
     - [Miscellaneous](#miscellaneous)
     - [Bootable target system](#bootable-target-system)
   - [Is it reliable? Testing](#is-it-reliable-testing)
+    - [Running tests](#running-tests)
+    - [Customize testing](#customize-testing)
 - [Examples](#examples)
   - [Plain file systems](#plain-file-systems)
     - [Backup or media storage with ext4](#backup-or-media-storage-with-ext4)
@@ -58,9 +59,10 @@ in a way that corrupts your data, therefore:
 ## Usage
 
 ### Installation
-StorageComposer currently requires Ubuntu Xenial or one of its variants. If no
-such OS is installed on your PC or if you wish to set up a bare-metal system, 
-boot from an Ubuntu Xenial live DVD first.
+StorageComposer consists of a bash script and a few helper files. Currently it
+requires Ubuntu Xenial or one of its variants. If no such OS is installed on
+your PC or if you wish to set up a bare-metal system, boot from an Ubuntu Xenial
+live DVD first.
 
 Download all `stcomp.*` files to the same directory and make sure that `stcomp.sh`
 is executable.
@@ -74,7 +76,7 @@ do they have to be formatted&nbsp;&ndash; StorageComposer will take care of that
 ### Running StorageComposer
 StorageComposer must be run from a regular user account in `sudo` as `root`.
 The system running StorageComposer is referred to as __“host system”__ or
-__“host”__; the storage managed by StorageComposer is called __“target system”__
+__“host”__; the storage managed by StorageComposer is called the __“target system”__
 or __“target”__.
 
 Depending on the command line arguments, one of these tasks is performed:
@@ -82,11 +84,11 @@ Depending on the command line arguments, one of these tasks is performed:
   the host system and prepare to `chroot` into this directory.
   Existing data on the underlying target partitions is lost.
   An internet connection is required; see here for details: 
-  [Does StorageComposer alter the system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run).<br>
+  [Does StorageComposer alter the system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)<br>
   Additionally, a minimal Ubuntu system can be __installed__&nbsp;(`-i`), making
   the target bootable.
-  Diagnostic messages&nbsp;(`-d`) can be enabled for building and also for
-  booting from the target.<br>
+  Diagnostic messages&nbsp;(`-d`) can be during building and also when
+  booting the target.<br>
   Command line: `sudo stcomp.sh -b [-i] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
 - __Mount__&nbsp;(`-m`) a previously built target system and prepare it for 
   `chroot`-ing; can also run without user interaction&nbsp;(`-y`) and with
@@ -278,7 +280,52 @@ Other settings are inherited from the host system:
 - console setup (character set and font)
 
 ### Is it reliable? Testing
-TODO
+Whenever a target is built (`-b`) or mounted (`-m)`, a script for testing
+the target storage is created. On the host, it is located in the same directory
+and has the same name as the `<config-file>` but ends with&nbsp;`-test.sh`.
+On bootable targets a copy is saved as `/usr/local/sbin/stcomp-test.sh`.
+
+These following tests run on all subvolumes, file systems and swap devices that
+are part of the target:
+- Basic data verification: data is written randomly and then read back and
+  verified.
+- Sequential read/write performance
+- Simulated file server performance: data is written and read randomly. Reads happen
+  more frequently than writes.
+
+Testing is non-destructive on file systems and subvolumes but creates several
+files that can be huge. To delete them, run the test script with option&nbsp;`-c`.  
+Swap space is overwritten when it is tested. If necessary, it is disabled 
+automatically during testing and re-enabled afterwards.
+  
+#### Running tests
+
+- Running from the host file system:  
+  Mount the target beforehand if necessary: `sudo stcomp.sh -m <config-file>`  
+  Then start the test: `sudo <config-file>-test.sh`
+- Running `chroot`-ed from the [Target mount point](#miscellaneous) or from the
+  target system:  
+  `stcomp-test.sh`
+
+Please disregard the warnings `Multiple writers may overwrite blocks that belong to other jobs` appearing at the beginning. In some cases, the ETA
+in the status line can also be misleading. Invoke the test script with 
+option&nbsp;`-h` for how to limit the script runtime and for other options.
+
+The testing backend&nbsp;&ndash; the “Flexible I/O Tester” (fio)&nbsp;&ndash; is
+very powerful and produces detailed results. Please refer to section&nbsp;6
+(“Normal output”) of the [fio Howto](https://github.com/axboe/fio/blob/master/HOWTO)
+or the fio manpage for an explanation of the output. 
+
+#### Customize testing
+
+In order to add your own tests or modify existing ones, you need to be familiar
+with the fio job file format and parameters, see sections&nbsp;4 
+(“Job file format”) and&nbsp;5 (“Detailed list of parameters”) of the
+[fio Howto](https://github.com/axboe/fio/blob/master/HOWTO) or the fio manpage.
+
+Custom tests can be added to a section marked as such close to the end of the
+test script. Please __make a copy of the modified script__ because the original
+`<config-file>-test.sh` will be overwritten whenever the target is mounted.
 
 ## Examples
 Target drives used in these examples start at `/dev/sde`. Drives are hard disks unless
@@ -875,7 +922,7 @@ If `/boot` is not on an encrypted file system then you need to enter
 your passphrase only once. The LUKS passphrase is derived
 from it according to the selected [LUKS authorization method](#authorization)
 and saved in the kernel keyring for all your encrypted file systems. The saved
-LUKS passphrase is discarded after 60&nbsp;seconds when all encrypted file
+LUKS passphrase is discarded after 60&nbsp;seconds; by that time, all encrypted file
 systems should be open.
 
 On the other hand, if `/boot` is on an encrypted file system then your 
@@ -919,7 +966,7 @@ response appear at the console.
 
 #### Does StorageComposer alter the host system on which it is run?
 StorageComposer may change system settings temporarily while it is running
-and restores them when it terminates. This is shown at the console as `Cleanup`.
+and restores them when it terminates.
  
 Depending on your storage configuration, one or more of these packages
 will be installed permanently (unless already present):
@@ -1044,8 +1091,12 @@ Credits go to the authors and contributors of these documents:
    
 1. Zak, Karel:
    [_mount manpage_](http://manpages.ubuntu.com/manpages/xenial/man8/mount.8.html).
-   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-14.
-  
+   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-22.
+   
+1. Axboe, Jens:
+   [_fio HOWTO_](https://github.com/axboe/fio/blob/master/HOWTO).
+   GitHub, 2016-10-18. Retrieved 2016-10-14.
+   
 1. Schneier, Bruce:
    [_“Evil Maid” Attacks on Encrypted Hard Drives_](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
    Schneier on Security, 2009-10-23. Retrieved 2016-10-14.
@@ -1058,6 +1109,6 @@ Credits go to the authors and contributors of these documents:
    [_How to change grub command-line (grub shell) keyboard layout?_](http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#751260)
    Ask Ubuntu (forum), 2016-03-28. Retrieved 2016-10-14.
 
-1. Thomas, Mickaël THOMAS:
+1. Thomas, Mickaël:
    [_read -e does not restore terminal settings correctly when interrupted if a trap is set_](https://lists.gnu.org/archive/html/bug-bash/2014-09/msg00029.html).
    bug-bash Archives, 2014-09-08. Retrieved 2016-10-19.
