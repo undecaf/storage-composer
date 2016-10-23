@@ -215,26 +215,17 @@ EOF
 
   eval "cat $REDIR" <<- EOF
 
-This script runs several test suites on a storage system built by
-StorageComposer. Each suite consists of a particular test running in 
-parallel on all subvolumes, file systems and swap devices which were
-built for this storage system. Custom test suites can be added, see
-the source of this script.
+This script runs several tests on a storage system built by
+StorageComposer. Each test runs in parallel instances on all subvolumes,
+file systems and swap devices which were built for this storage system.
+Custom tests can be added, see at the end of the source of this script.
 
-Files created during the tests remain on subvolumes and file systems
-until running this script with argument '-c'.
+Several files are created during the tests on subvolumes and file systems.
+Running this script again with option '-c' will clean up.
 
-The 'Flexible I/O Tester' (fio) is used for testing. Please refer
-to the fio(1) manpage for detailed documentation or see here:
-https://github.com/axboe/fio
-
-Usage: $SCRIPT [-s <percentage>] [-t <runtime>] [-p <num-jobs>]
+Usage: $SCRIPT [-s <size>] [-t <runtime>] [-p <jobs>] [<fio-option> ...]
        $SCRIPT -c
        $SCRIPT -h
-
-  <config-file> describes the target storage and can be created and
-  edited interactively prior to any other action. If no <config-file>
-  is specified then $DEFAULT_CONFIG_FILE is used by default.
 
   Options:
     -s  Size of the test files in percent of free space of each file
@@ -243,8 +234,11 @@ Usage: $SCRIPT [-s <percentage>] [-t <runtime>] [-p <num-jobs>]
     -t  Runtime limit in seconds unless suffixed with 'm' or 'h'.
         If omitted then all tests are run to completion. This may take
         very long.
-    -p  Number of parallel test runs per subvolume, file system and swap
-        device (1..100). Defaults to 3.
+    -p  Number of parallel tests running per subvolume, file system and
+        swap device (1..100). Defaults to 3.
+    <fio-option>  Passed to fio, the 'Flexible I/O Tester' which acts
+        as testing backend. Please refer to fio(1) for detailed
+        documentation or see here: https://github.com/axboe/fio
     -c  Cleans up: removes all files created during testing, does not
         run any tests.
     -h  Displays this text and exits.
@@ -420,10 +414,13 @@ iodepth=10"
 #   run_test <description> <unique-identifier> <global-section-body>
 # in this section.
 # See above for examples, see function run_test() for details.
+#
+# Finally, MAKE A COPY of the customized script as this script will be
+# overwritten on each mount.
 
 # ^-^-^-^-^-^-^-^-^-^-^-^-^-^-- End custom tests --^-^-^-^-^-^-^-^-^-^-^-^-^
 
 
 # Run the tests defined above
-fio $JOB_FILE --runtime $(( RUNTIME / NUM_TESTS ))s
+fio $JOB_FILE --runtime $(( RUNTIME / NUM_TESTS ))s $@
 rm $JOB_FILE
