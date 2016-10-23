@@ -161,8 +161,7 @@ on_exit() {
   if [ ! -f "$EXIT_SCRIPT" ]; then
     # Prepare the cleanup script
     EXIT_SCRIPT=$(mktemp --tmpdir)
-    trap "{ set +e +x; echo \$'\nStarting cleanup'; tac $EXIT_SCRIPT | . /dev/stdin; rm $EXIT_SCRIPT; exit; }" EXIT
-    echo "echo 'End of cleanup'" >> $EXIT_SCRIPT
+    trap "{ set +e +x; echo ''; tac $EXIT_SCRIPT | . /dev/stdin; rm $EXIT_SCRIPT; exit; }" EXIT
   fi
 
   local DESC=$1
@@ -1666,7 +1665,9 @@ EOF
   # Save configuration
   [ ! -f "$CONFIG_FILE" ] && echo "Creating configuration file '$CONFIG_FILE'"
   sudo --user=$SUDO_USER truncate -s 0 "$CONFIG_FILE"
-  echo "# StorageComposer configuration file, created by $0" >> "$CONFIG_FILE"
+  echo \
+"# StorageComposer configuration file, DO NOT EDIT
+# created by $(readlink -e $0), $(date --rfc-3339 seconds)" >> "$CONFIG_FILE"
 
   for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS FS_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
       ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
@@ -1724,7 +1725,7 @@ cleanup $DEVS_TO_UNLOCK
 [ -d $TARGET ] && [ -n "$(ls -A $TARGET)" ] && die "$TARGET is not empty"
 
 if [ "$UNMOUNT_GOAL" ]; then
-  echo $'\n'"Storage unmounted from $TARGET"
+  echo $'\n'"****** Storage unmounted from $TARGET ******"
   exit
 fi
 
@@ -2010,7 +2011,7 @@ chmod 755 "$TEST_SCRIPT"
 if [ ! "$INSTALL_GOAL" ]; then
   # Mount the target file system for chroot-ing
   mount_devs
-  echo $'\n'"Target system mounted at $TARGET and ready to chroot"
+  echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"
   exit
 fi
 
@@ -2093,9 +2094,10 @@ if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_
 fi
 
 # Copy test script
-mkdir -p ${TARGET}/usr/local/sbin
-cp -f "$TEST_SCRIPT" ${TARGET}/usr/local/sbin
-chmod 755 "${TARGET}/usr/local/sbin/$(basename "$TEST_SCRIPT")"
+TARGET_TEST_SCRIPT=/usr/local/sbin/${SCRIPT_NAME}-test.sh
+mkdir -p ${TARGET}$(dirname $TARGET_TEST_SCRIPT)
+cp -f "$TEST_SCRIPT" ${TARGET}$TARGET_TEST_SCRIPT
+chmod 755 ${TARGET}$TARGET_TEST_SCRIPT
 
 # Save certain host debconf settings
 mkdir -p ${TARGET}/tmp
@@ -2107,7 +2109,7 @@ cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
 
 # chroot into the installation target
 mount_devs
-echo "Configuring target system: chroot into $TARGET"
+echo "Configuring target system: chrooting into $TARGET"
 
 if chroot $TARGET /bin/bash -l <<- EOF
 	set -e +x
@@ -2208,7 +2210,7 @@ then
   echo 'Installation finished'
 
 else
-  echo "*** Target system configuration failed ***" 1>&2
+  die 'Target system configuration failed'
 fi
 
-echo $'\n'"Target system mounted at $TARGET and ready to chroot"
+echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"

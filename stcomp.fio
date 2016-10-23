@@ -1,4 +1,3 @@
-#!/bin/bash
 
 # Template for automated storage testing
 # ======================================
@@ -38,9 +37,6 @@ FILE_PREFIX=__$(basename $0)
 
 # Temporary fio job file
 JOB_FILE=${TMPDIR:-/tmp}/${FILE_PREFIX}.job
-
-# Number of tests, i.e. run_test() calls. Adjust this for custom tests!
-NUM_TESTS=2
 
 
 # --------------------------------------------------------------------------
@@ -134,6 +130,8 @@ uuid_to_devs() {
 # Calls:
 #   uuid_to_devs
 #
+NUM_TESTS=0
+
 function run_test() {
   local MP
   local DEV
@@ -187,6 +185,8 @@ size=$FREE
 offset=1M
 " >> $JOB_FILE
   done
+
+  NUM_TESTS=$(( NUM_TESTS + 1 ))
 }
 
 
@@ -277,11 +277,12 @@ while getopts hcs:t:p: OPT; do
 
     t)
       [[ ! "$OPTARG" =~ $TIME_RE ]] \
-        && usage "Invalid time: -$OPT $OPTARG"
-      # Calculate runtime per test as needed for fio (always in seconds)
+        && usage "Invalid runtime: -$OPT $OPTARG"
+        
+      # Always express total runtime in seconds
       TIME_UNIT=1
       [ "${BASH_REMATCH[2]}" ] && TIME_UNIT=${TIME_UNITS[${BASH_REMATCH[2]}]}
-      RUNTIME=$(( ${BASH_REMATCH[1]} * TIME_UNIT / NUM_TESTS ))s
+      RUNTIME=$(( ${BASH_REMATCH[1]} * TIME_UNIT ))
       ;;
 
     p)
@@ -344,7 +345,7 @@ fi
 
 # Install fio
 install_pkg fio \
-  || die "Cannot install fio, this requires the 'universe' repository"
+  || die "Cannot install fio, is 'universe' repository set in /etc/apt/sources.list?"
 
 # Find all/active swap devices of this configuration
 SWAP_DEVS=
@@ -375,10 +376,7 @@ numjobs=$NUM_JOBS
 verify_state_save=0
 " > $JOB_FILE
 
-[ "$RUNTIME" ] && echo -n \
-"time_based
-runtime=$RUNTIME
-" >> $JOB_FILE
+[ "$RUNTIME" ] && echo 'time_based' >> $JOB_FILE
 
 
 # ---------------------------------- Tests --------------------------------
@@ -395,6 +393,14 @@ ioengine=libaio
 iodepth=16
 verify=crc32c"
 
+# Sequential read/write with varying block sizes
+run_test 'sequential read/write' 'read/write' \
+"rw=readwrite
+bsrange=512-16k
+direct=1
+ioengine=libaio
+iodepth=16"
+
 # Try to mimic the Intel IOMeter File Server Access Pattern:
 # test 80% reads/20% writes with varying block sizes.
 # Taken from fio examples, see
@@ -410,14 +416,14 @@ iodepth=10"
 
 # v-v-v-v-v-v-v-v-v-v-v-v-v-v- Begin custom tests -v-v-v-v-v-v-v-v-v-v-v-v-v
 
-# For each custom test, insert the following function call in this section
-# (see function run_test() for details) and increase variable NUM_TESTS
-# accordingly:
+# For each custom test, insert
 #   run_test <description> <unique-identifier> <global-section-body>
+# in this section.
+# See above for examples, see function run_test() for details.
 
 # ^-^-^-^-^-^-^-^-^-^-^-^-^-^-- End custom tests --^-^-^-^-^-^-^-^-^-^-^-^-^
 
 
 # Run the tests defined above
-fio $JOB_FILE
+fio $JOB_FILE --runtime $(( RUNTIME / NUM_TESTS ))s
 rm $JOB_FILE
