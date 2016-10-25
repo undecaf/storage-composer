@@ -140,11 +140,11 @@ function run_test() {
   local STONEWALL=stonewall
   
   # Define the test
-  echo -n \
+  echo -n >> $JOB_FILE \
 "
 [global]
 $3
-" >> $JOB_FILE
+"
 
   # Run the test at the current mount point of each subvolume of each file system
   for MP in ${!MOUNT_POINTS[*]}; do
@@ -153,14 +153,14 @@ $3
     FREE=$((FREE * FREE_SPACE_USAGE / ${MOUNT_POINTS[$MP]} / NUM_JOBS / 1024))K
     LABEL="$2 $MP"
     
-    echo -n \
+    echo -n >> $JOB_FILE \
 "
 [$LABEL]
 new_group
 description=$MP - $1
 directory=$MP
 size=$FREE
-" >> $JOB_FILE
+"
 
     # Wait until all jobs of the previous test are finished
     echo "$STONEWALL" >> $JOB_FILE
@@ -175,7 +175,7 @@ size=$FREE
 
     LABEL="$2 $DEV"
     
-    echo -n \
+    echo -n >> $JOB_FILE \
 "
 [$LABEL]
 new_group
@@ -183,7 +183,7 @@ description=$DEV - $1
 filename=$DEV
 size=$FREE
 offset=1M
-" >> $JOB_FILE
+"
   done
 
   NUM_TESTS=$(( NUM_TESTS + 1 ))
@@ -362,13 +362,13 @@ if [ "$SWAPOFF_DEVS" ]; then
 fi
 
 # Global settings for all jobs (unless changed in another [global] section)
-echo -n \
+echo -n > $JOB_FILE \
 "[global]
 filename_format=${FILE_PREFIX}.\$jobnum.\$filenum
 group_reporting
 numjobs=$NUM_JOBS
 verify_state_save=0
-" > $JOB_FILE
+"
 
 [ "$RUNTIME" ] && echo 'time_based' >> $JOB_FILE
 
