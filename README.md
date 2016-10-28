@@ -1,13 +1,16 @@
 # StorageComposer
 
 ## Purpose
-- Creates and manages disk storage under Ubuntu, from simple (single partition)
-  to complex (multiple drives/partitions, various file systems, encryption, RAID
-  and SSD caching in almost any combination).
-- Installs a (minimal) Ubuntu onto the storage and makes it bootable.
+- __Creates and manages__ disk storage stacks under Ubuntu, from simple 
+  (single partition) to complex (multiple drives/partitions, various file 
+  systems, encryption, RAID and SSD caching in almost any combination).
+- __Installs__ a (basic) Ubuntu onto the storage and makes it bootable, even if the
+  storage is complex.
+- __Clones__ an existing Ubuntu system and makes it bootable even on a different
+  storage stack.
 
-This project started as a simple helper script for setting up encrypted storage
-for several PCs. Somehow it got out of control...
+This project started as a simple script for setting up encrypted storage
+for a few PCs. When RAID and caching joined in it got out of control somehow...
 
 
 ## :warning: WARNING WARNING WARNING :warning:
@@ -24,14 +27,19 @@ malfunction badly and corrupt your data, therefore:
 ## Proceed at your own risk
 
 - [Usage](#usage)
-  - [Installation](#installation)
+  - [What you need](#what-you-need)
   - [Disk partitioning](#disk-partitioning)
   - [Running StorageComposer](#running-storagecomposer)
+    - [Building, installing and cloning](#building-installing-and-cloning)
+    - [Mounting](#mounting)
+    - [Unmounting](#unmounting)
+    - [Help](#help)
   - [Configuring the target system](#configuring-the-target-system)
     - [File systems](#file-systems)
     - [Authorization](#authorization)
-    - [Miscellaneous](#miscellaneous)
-    - [Bootable target system](#bootable-target-system)
+    - [Global settings](#global-settings)
+    - [Installing](#installing)
+    - [Cloning](#cloning)
   - [Is it reliable? Testing](#is-it-reliable-testing)
     - [Running tests](#running-tests)
     - [Customize testing](#customize-testing)
@@ -58,7 +66,7 @@ malfunction badly and corrupt your data, therefore:
     
 ## Usage
 
-### Installation
+### What you need
 StorageComposer consists of a bash script and a few helper files. Currently it
 requires Ubuntu Xenial or one of its variants. If no such OS is installed on
 your PC or if you wish to set up a bare-metal system, boot from an Ubuntu Xenial
@@ -80,32 +88,58 @@ __“host”__; the storage managed by StorageComposer is called the __“target
 or __“target”__.
 
 Depending on the command line arguments, one of these tasks is performed:
-- __Build__&nbsp;(`-b`) a new target system, mount it on a directory in
-  the host system and prepare to `chroot` into this directory.
-  Existing data on the underlying target partitions is lost.
-  An internet connection is required; see here for details: 
-  [Does StorageComposer alter the system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)<br>
-  Additionally, a minimal Ubuntu system can be __installed__&nbsp;(`-i`), making
-  the target bootable.
-  Diagnostic messages&nbsp;(`-d`) can be during building and also when
-  booting the target.<br>
-  Command line: `sudo stcomp.sh -b [-i] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
-- __Mount__&nbsp;(`-m`) a previously built target system and prepare it for 
-  `chroot`-ing; can also run without user interaction&nbsp;(`-y`) and with
-  diagnostic messages&nbsp;(`-d`).<br>
-  Command line: `sudo stcomp.sh -m [-y] [-d] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
-- __Unmount__&nbsp;(`-u`) a target system from its mount point in the host
-  system; can run without user interaction&nbsp;(`-y`).<br>
-  Command line: `sudo stcomp.sh -u [-y] `<code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code>
-- Display a __help message__&nbsp;(`-h`).<br>
-  Command line: `stcomp.sh -h`
 
+#### Building, installing and cloning
+__`sudo stcomp.sh -b [-i|-c] [-d] `__
+<b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></b>
+
+Builds&nbsp;(`-b`) a new target system, mounts it at a directory on
+the host system and prepares to `chroot` into this directory.
+Existing data on the underlying target partitions is lost.
+
+An internet connection is required; see here for details:
+[Does StorageComposer alter the system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
+  
+If desired then StorageComposer can make your target bootable by:
+- [__installing__](#installing)&nbsp;(`-i`) a basic Ubuntu system
+  from the Ubuntu repositories, or
+- [__cloning__](#cloning)&nbsp;(`-i`) an existing local or remote Ubuntu system:
+  this copies the directory tree of the source system to the target. Then the target
+  is reconfigured according to its storage configuration.
+    
+Diagnostic messages&nbsp;(`-d`) can be displayed during building and also when
+booting the target.  
+
+#### Mounting
+__`sudo stcomp.sh -m [-i|-c] [-y] [-d]`__
+<b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></b>
+
+Mounts&nbsp;(`-m`) a previously built target system and prepares it for 
+`chroot`-ing. Optionally, `-i`&nbsp;[installs Ubuntu](#installing) 
+and&nbsp;`-c`&nbsp;[clones an existing system](#cloning).
+This will overwrite data on the target devices.
+
+`-y`&nbsp;mounts (but does not install or clone) without user interaction,
+`-d`&nbsp;prints diagnostic messages.
+
+
+#### Unmounting
+__`sudo stcomp.sh -u [-y] `__
+<b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></n>
+
+Unmounts a target system from its current mount point on the host system.
+Use&nbsp;`-y` for unattended unmounting.  
+
+#### Help  
+ __`stcomp.sh -h`__ displays a help message.
+  
 
 ### Configuring the target system
 Target configuration is specified interactively and is saved to/loaded from a
-<code>&lt;config&#x2011;file&gt;</code>. If omitted from the command line, <code>&lt;config&#x2011;file&gt;</code>
-defaults to `~/.stcomp.conf`. A separate <code>&lt;config&#x2011;file&gt;</code> should be
-kept for each target system that is managed by StorageComposer.
+<code>&lt;config&#x2011;file&gt;</code>. If omitted from the command line, 
+<code>&lt;config&#x2011;file&gt;</code> defaults to `~/.stcomp.conf`.
+A separate <code>&lt;config&#x2011;file&gt;</code> should be kept for each
+target system that is managed by StorageComposer.
 
 Configuration options are entered/edited strictly sequentially (_sigh_) in the
 order of the following sections. Each option defaults to what was last saved to
@@ -114,10 +148,10 @@ the <code>&lt;config&#x2011;file&gt;</code>.
 For each option, entering `?` will indicate what is a valid input.
 
 #### File systems
-Each target system _must have_ a root file system and _can have_ additional file systems.
-If the target is bootable and is running then the root file system appears at
-`/`. If the target is mounted in the host then the root file system
-appears at the [`Target mount point`](#miscellaneous).
+Each target system _must have_ a root file system and _can have_ additional file
+systems. If the target is bootable and is running then the root file system appears
+at `/`. If the target is mounted in the host then the root file system
+appears at the [`Target mount point`](#global-settings).
 In either case, additional file systems are mounted relative to the root file system.
 
 The root file system has to be configured first. More file systems can be added
@@ -125,15 +159,16 @@ afterwards. For each file system, the following prompts appear in this order:
 
 <dl>
   <dt><code>Partition(s) for root file system (two or more make a RAID):</code>, or<br>
-  <code>Partition(s) for additional file system (two or more make a RAID, empty to continue):</code></dt>
-  <dd><p>Enter the partition(s) that make up this file system, separated by space. Leading
-  <code>/dev/</code> path components may be omitted for brevity, e.g.
+  <code>Partition(s) for additional file system (two or more make a RAID, empty 
+  to continue):</code></dt>
+  <dd><p>Enter the partition(s) that make up this file system, separated by space.
+  Leading <code>/dev/</code> path components may be omitted for brevity, e.g.
   <code>sde1</code> is equivalent to <code>/dev/sde1</code>.</p></dd>
   
   <dt><code>RAID level:</code></dt>
   <dd><p>If several partitions were specified then an
-  <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a> will be built
-  from these components. Enter the RAID level (<code>0</code>, <code>1</code>,
+  <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a> will be
+  built from these components. Enter the RAID level (<code>0</code>, <code>1</code>,
   <code>4</code>, <code>5</code>, <code>6</code> or <code>10</code>). The minimum
   number of components for each level is 2, 2, 3, 3, 4 and 4, respectively.</p>
   <p>A RAID1 consisting of both SSDs and HDDs will prefer reading from the SSDs.
@@ -237,11 +272,11 @@ content of a file, see below.
   The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> and
   authorization method is remembered for five&nbsp;minutes. Within that time,
   it does not have to be retyped and can be used for
-  <a href="#running-storagecomposer">unattended mounting</a>
+  <a href="#mounting">unattended mounting</a>
   (<code>-m&nbsp;-y</code>).</p></dd>
 </dl>
 
-#### Miscellaneous
+#### Global settings
 These options affect all file systems.
 <dl>
   <dt><code>Prefix to mapper names and labels (recommended):</code></dt>
@@ -258,8 +293,10 @@ These options affect all file systems.
   automatically: <code>/dev</code>, <code>/dev/pts</code>, <code>/proc</code>, <code>/run/resolvconf</code>, <code>/run/lock</code>, <code>/sys</code>.</p></dd>
 </dl>
 
-#### Bootable target system
-There are only a few target configuration options:
+#### Installing
+These prompts appear only if you
+[install Ubuntu](#building-installing-and-cloning) on the target system:
+
 <dl>
   <dt><code>Hostname:</code></dt>
   <dd><p>Determines the hostname of the target when it is running.</p></dd>
@@ -270,6 +307,7 @@ There are only a few target configuration options:
   convenience, username and passphrase of the current host user (the one running
   <code>sudo&nbsp;stcomp.sh</code>) can be copied to the target.</p></dd>
 </dl>
+
 Other settings are inherited from the host system:
 - architecture (`x86` or `amd64`)
 - distribution version (`Xenial` etc.)
@@ -279,13 +317,73 @@ Other settings are inherited from the host system:
 - keyboard configuration
 - console setup (character set and font)
 
+#### Cloning
+When [cloning a directory](#building-installing-and-cloning) containing an Ubuntu
+system, the source directory tree is copied to the target and the target system
+is reconfigured so that it can boot from its storage.
+
+Please note these requirements:
+
+- All _device_ file systems of the source system _must be mounted_ at the source
+  directory. An additional instance of StorageComposer may be helpful if the
+  source storage stack is complex.
+- Source subdirectories containing _no-device_ file systems such as `proc`,
+  `sysfs`, `tmpfs` etc. are not copied.
+- The source system _should not be running_. Otherwise, the target may end up
+  in an inconsistent state. Consequently, there should be a running system
+  containing the source directory as a subdirectory, i.e. not `/`.
+- If the source directory is remote then
+  <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html">rsync</a>
+  and an <a href="https://help.ubuntu.com/community/SSH">SSH server</a>
+  must be installed at the remote host.
+
+<dl>
+  <dt><code>Remote host to clone from (empty for a local directory):</code></dt>
+  <dd><p>A hostname or an IP address are required here if you wish to 
+  clone a remote directory. Leaving this empty will skip the following 
+  <b><i>Remote...</i></b> prompts.</dd>
+
+  <dt><code>Remote SSH port:</code></dt>
+  <dd><p>The port at which the remote SSH server is listening.</p></dd>
+
+  <dt><code>Remote username (required only if password authentication):</code></dt>
+  <dd><p>Enter the remote username for password-based authentication. The
+  password prompt will appear later in the process.
+  Leave this field empty if the host uses a non-interactive authentication method,
+  e.g. public key authentication.</p>
+  <p>The authenticated user needs sufficient privileges to read everything within the
+  remote source directory.</p></dd>
+
+  <dt><code>Remote directory to clone from:</code>, or<br>
+  <code>Directory to clone from:</code></dt>
+  <dd><p>The directory where the storage of the source system is mounted. The
+  source system should be an Ubuntu release supported by StorageComposer but it
+  <i>should not be running</i>. Otherwise, the target may end up in an
+  inconsistent state.
+  </p></dd>
+</dl>
+
+Since the target storage configuration may differ from the source, please be
+aware of these restrictions:
+- All filesystem-related packages that are required for the target storage are
+  reconfigured from scratch. Excess file system packages copied from the source are purged
+  from the target, see
+  [Which packages can be affected by cloning?](#which-packages-can-be-affected-by-cloning)
+- Custom GRUB2 configuration options are lost.
+- Swap space is not cloned, and the target swap space remains empty.
+- Hard links that would cross file system boundaries on the target system are
+  not preserved.
+- Target device names and UUIDs will be different from the source. This can break
+  existing scripts. Files required for booting such as `/etc/fstab` etc. are
+  adjusted by StorageComposer. 
+
 ### Is it reliable? Testing
 Whenever a target is built (`-b`) or mounted (`-m)`, a script for testing
 the target storage is created. On the host, it is located in the same directory
-and has the same name as the `<config-file>` but ends with&nbsp;`-test.sh`.
+as the `<config-file>` but has&nbsp;`-test.sh` appended to the name.
 On bootable targets a copy is saved as `/usr/local/sbin/stcomp-test.sh`.
 
-These following tests run on all subvolumes, file systems and swap devices that
+The following tests run on all subvolumes, file systems and swap devices that
 are part of the target:
 - Basic data verification: data is written randomly and then read back and
   verified.
@@ -295,33 +393,38 @@ are part of the target:
 
 Testing is non-destructive on file systems and subvolumes but creates several
 files that can be huge. To delete them, run the test script with option&nbsp;`-c`.  
-Swap space is overwritten when it is tested. If necessary, it is disabled 
-automatically during testing and re-enabled afterwards.
+Swap space is overwritten by testing. If necessary, it is disabled 
+automatically (`swapoff`) and re-enabled thereafter (`swapon`).
   
 #### Running tests
 
-- Running from the host file system:  
-  Mount the target beforehand if necessary: `sudo stcomp.sh -m <config-file>`  
-  Then start the test: `sudo <config-file>-test.sh`
-- Running `chroot`-ed from the [Target mount point](#miscellaneous) or from the
-  target system:  
-  `stcomp-test.sh`
+- __Testing from within the host file system__  
+  Mount the target beforehand if necessary:
+  __`sudo stcomp.sh -m <config-file>`__  
+  Then start the test: __`sudo <config-file>-test.sh`__
+- __Testing `chroot`-ed__ at the [Target mount point](#global-settings) or __in
+  the running target system__  
+  Command line: __`sudo stcomp-test.sh`__
 
 Please disregard the warnings `Multiple writers may overwrite blocks that belong to other jobs` appearing at the beginning. In some cases, the ETA
 in the status line can also be misleading. Invoke the test script with 
-option&nbsp;`-h` for how to limit the script runtime and for other options.
+option&nbsp;`-h` for help on how to limit the script runtime and on other
+options.
 
 The testing backend&nbsp;&ndash; the “Flexible I/O Tester” (fio)&nbsp;&ndash; is
 very powerful and produces detailed results. Please refer to section&nbsp;6
 (“Normal output”) of the [fio Howto](https://github.com/axboe/fio/blob/master/HOWTO)
-or the fio manpage for an explanation of the output. 
+or to the
+[fio manpage](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html)
+for an explanation of the output. 
 
 #### Customize testing
 
 In order to add your own tests or modify existing ones, you need to be familiar
 with the fio job file format and parameters, see sections&nbsp;4 
 (“Job file format”) and&nbsp;5 (“Detailed list of parameters”) of the
-[fio Howto](https://github.com/axboe/fio/blob/master/HOWTO) or the fio manpage.
+[fio Howto](https://github.com/axboe/fio/blob/master/HOWTO) or the
+[fio manpage](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html).
 
 Custom tests can be added to a section marked as such close to the end of the
 test script. Please __make a copy of the modified script__ because the original
@@ -855,7 +958,7 @@ as cache.
 - [Which Ubuntu hosts are supported?](#which-ubuntu-hosts-are-supported)
 - [What about Debian hosts and targets?](#what-about-debian-hosts-and-targets)
 - [Why use an external tool for partitioning?](#why-use-an-external-tool-for-partitioning)
-- [How to create a _complete_ Ubuntu/Xubuntu/Kubuntu/... target with StorageComposer?](#how-to-create-a-_complete_-ubuntu-xubuntu-kubuntu-target-with-storagecomposer)
+- [How to install a complete Ubuntu desktop with StorageComposer?](#how-to-install-a-complete-ubuntu-desktop-with-storagecomposer)
 - [Which file systems can be created?](#which-file-systems-can-be-created)
 - [What does “SSD erase block size” mean and why should I care?](#what-does-ssd-erase-block-size-mean-and-why-should-i-care)
 - [Can I create a “fully encrypted” target system?](#can-i-create-a-fully-encrypted-target-system)
@@ -864,6 +967,7 @@ as cache.
 - [How to achieve two-factor authentication for encrypted file systems?](#how-to-achieve-two-factor-authentication-for-encrypted-file-systems)
 - [Is two-factor authentication possible if `/boot` is encrypted?](#is-two-factor-authentication-possible-if-boot-is-encrypted)
 - [To which drives is the MBR written?](#to-which-drives-is-the-mbr-written)
+- [Which packages can be affected by cloning?](#which-packages-can-be-affected-by-cloning)
 - [Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?](#why-does-storagecomposer-sometimes-appears-to-hang-when-run-again-shortly-after-creating-a-target-with-md-raid)
 - [Does StorageComposer alter the host system on which it is run?](#does-storagecomposer-alter-the-host-system-on-which-it-is-run)
 - [What if drive names change between successive runs of StorageComposer?](#what-if-drive-names-change-between-successive-runs-of-storagecomposer)
@@ -882,14 +986,15 @@ is still on the wish list.
 Partitioning tools for Linux are readily available, such as `fdisk`, `gdisk`, `parted`, `GParted` and `QtParted`. Attempting to duplicate their
 functions in StorageComposer did not appear worthwhile.
 
-#### How to create a _complete_ Ubuntu/Xubuntu/Kubuntu/... target with StorageComposer?
+#### How to install a complete Ubuntu desktop with StorageComposer?
 Unfortunalety, I could not make the Ubuntu Live DVD installer work with encrypted and
 cached partitions created by StorageComposer.
 
-Therefore, let StorageComposer install a minimal Ubuntu on your target system first.
+Therefore, let StorageComposer install a basic Ubuntu on your target system first.
 Then `chroot` into your target or boot it and install one of these packages:
 `{ed,k,l,q,x,}ubuntu-desktop`. The result is similar but not identical
-to what the Ubuntu installer produces.
+to what the Ubuntu installer produces. Most notably, you will have to install
+localization packages such as `language-pack-*` by hand.
 
 #### Which file systems can be created?
 Currently [ext2, ext3, ext4](https://ext4.wiki.kernel.org/index.php/Main_Page),
@@ -939,9 +1044,11 @@ file system; even then, the MBR remains unencrypted and is still vulnerable to
 [“evil maid” attacks](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
 
 #### How to avoid retyping my passphrase if `/boot` is encrypted?
-Place `/boot` in a separate LUKS-encrypted file system that uses a passphrase.
+Make a separate file system for `/boot` (e.g. ext2) on a LUKS-encrypted 
+partition, using your passphrase.
 Encrypt the remaining file systems with a key file. Save the key file in the
-initramfs. StorageComposer cannot do this all by itself, some manual work is needed.
+initramfs in `/boot`.  
+StorageComposer cannot do all of this, some manual work is required.
 
 #### How to achieve two-factor authentication for encrypted file systems?
 Use a key file for [LUKS authorization](#authorization) (method&nbsp;2 or&nbsp;3)
@@ -950,12 +1057,25 @@ and keep it on a removable device (USB stick, MMC card).
 #### Is two-factor authentication possible if `/boot` is encrypted?
 Yes, the solution is similar to
 [How to avoid retyping my passphrase if `/boot` is encrypted?](#how-to-avoid-retyping-my-passphrase-if-boot-is-encrypted)
-Just create your `/boot` file system on a removable drive.
+Just create your `/boot` file system on a LUKS-encrypted partition of a removable
+drive.
 
 #### To which drives is the MBR written?
 If the storage is made bootable then an MBR is written to all target drives
 making up the file system mounted at `/boot` if such a file system exists.
 Otherwise, the MBR goes to all target drives of the root file system.
+
+#### Which packages can be affected by cloning?
+File systems, caches etc. that are unsupported by StorageComposer can never be part
+of the target storage configuration. Therefore, the following packages are purged
+from the target in order to get rid of their effects on initramfs, `systemd`
+services, `udev` rules etc.:
+`f2fs-tools`, `nilfs-tools`, `jfsutils`, `reiserfsprogs`, `ocfs2-*`,
+`zfs-*`, `cachefilesd`, `flashcache-*`, `lvm2`.
+
+Packages from the source that are also required by the target are reconfigured from 
+scratch, i.e. they are purged and reinstalled only if needed: 
+`mdadm`, `bcache-tools`, `cryptsetup`, `btrfs-tools`, `xfsprogs`.
 
 #### Why does StorageComposer sometimes appears to hang when run again shortly after creating a target with MD/RAID?
 Immediately after being created, the RAID starts an initial resync. During that
@@ -971,8 +1091,8 @@ and restores them when it terminates.
 Depending on your storage configuration, one or more of these packages
 will be installed permanently (unless already present):
 `mdadm`, `smartmontools`, `cryptsetup`, `keyutils`, `gnupg`, `whois`,
-`bcache-tools`, `btrfs-tools`, `xfsprogs`, `fio`, `debconf-utils`
-and `debootstrap`.
+`bcache-tools`, `btrfs-tools`, `xfsprogs`, `fio`, `debconf-utils`,
+`openssh-client` and `debootstrap`.
 
 Some packages copy files to your initramfs, install `systemd` services, add
 `udev` rules etc. Thus, additional block devices (notably RAID, LUKS and
@@ -1036,6 +1156,13 @@ Credits go to the authors and contributors of these documents:
    
 1. [_XFS_](http://xfs.org/index.php/Main_Page).
    XFS.org Wiki, 2016-06-06. Retrieved 2016-10-14.
+
+1. Tridgell, Andrew; Mackerras, Paul et al.:
+   [_rsync manpage_](http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html).
+   Ubuntu Manpage Repository, 2014-06-22. Retrieved 2016-10-23.
+
+1. [_SSH_](https://help.ubuntu.com/community/SSH).
+   Ubuntu Community Help Wiki, 2015-02-27. Retrieved 2016-10-28.
    
 1. [_Linux Raid Wiki_](https://raid.wiki.kernel.org/index.php/Linux_Raid).
    kernel.org Wiki, 2016-10-12. Retrieved 2016-10-14.
@@ -1096,6 +1223,10 @@ Credits go to the authors and contributors of these documents:
 1. Axboe, Jens:
    [_fio HOWTO_](https://github.com/axboe/fio/blob/master/HOWTO).
    GitHub, 2016-10-18. Retrieved 2016-10-14.
+
+1. Carroll, Aaron; Axboe, Jens:
+   [_fio manpage_](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html).
+   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-23.
    
 1. Schneier, Bruce:
    [_“Evil Maid” Attacks on Encrypted Hard Drives_](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).

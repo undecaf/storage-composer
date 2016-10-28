@@ -7,7 +7,7 @@
 # simple situations (single partition) to complex ones (multiple drives/partitions, 
 # different file systems, encryption, RAID and SSD caching in almost any combination).
 #
-# This script can also install a minimal Ubuntu and make the storage bootable.
+# This script can also install a basic Ubuntu and make the storage bootable.
 #
 # Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
 #
@@ -37,7 +37,7 @@ SCRIPT_NAME=$(basename -s .sh $0)
 DEFAULT_CONFIG_FILE=$HOME/.${SCRIPT_NAME}.conf
 CONFIG_FILE=$DEFAULT_CONFIG_FILE
 
-# Passphrase expiration time in keyring (in s)
+# Passphrase expiration time in keyring, SSH master connection timeout (in s)
 PW_EXPIRATION=300
 
 # Absolute path to initramfs keyscript in target system
@@ -319,7 +319,7 @@ read_passphrase() {
 
     # Repeat if passphrase expired while in this loop
     keyctl timeout $ID $PW_EXPIRATION 2>/dev/null && break
-    echo '  *** Previous passphrase expired, enter a new one ***' 1>&2
+    echo '  *** Previous passphrase expired ***' 1>&2
   done
 
   echo -n $ID
@@ -418,7 +418,7 @@ read_filepath() {
 
 # --------------------------------------------------------------------------
 
-# Prompts for one or several absolute directory paths and verifies that 
+# Prompts for one or several absolute directory paths and can verify that 
 # they exist. Prints the directory paths to stdout. Error messages go to 
 # stderr.
 #
@@ -426,15 +426,17 @@ read_filepath() {
 #   $1           prompt
 #   $2           default value (optional)
 #   $3           allows entering multiple paths if present and non-empty (optional)
+#   $4           verifies that directories exist if present and non-empty (optional)
 #   $BATCH_MODE  non-empty if running not interactively
 #
 read_dirpaths() {
   [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local DEFAULT=$2
-  local REPLY=
+  local REPLY
+  local PATHS=
 
-  until [ "$REPLY" ]; do
+  until [ "$PATHS" ]; do
     read -erp "$1" -i "$DEFAULT"
 
     I=0
@@ -443,24 +445,28 @@ read_dirpaths() {
 
       if [ $I -gt 1 -a -z "$3" ]; then
         echo "*** Only one path may be entered ***" 1>&2
-        DEFAULT="$REPLY"
-        REPLY=
-        continue 2
+
       elif [[ "$P" != /* ]]; then
         echo "*** Not an absolute path: $P ***" 1>&2
-        DEFAULT="$REPLY"
-        REPLY=
-          continue 2
-      elif [ ! -d "$P" ]; then
+
+      elif [ -n "$4" -a ! -d "$P" ]; then
         echo "*** Not a directory: $P ***" 1>&2
-        DEFAULT="$REPLY"
-        REPLY=
-        continue 2
+
+      else
+        # Path is valid
+        [ "$P" != '/' ] && P=${P%/}
+        PATHS="$PATHS $P"
+        continue
       fi
+
+      # Invalid path, repeat input
+      DEFAULT="$REPLY"
+      PATHS=
+      continue 2
     done
   done
 
-  echo -n "$REPLY"
+  echo -n "${PATHS/ /}"
 }
 
 
@@ -506,17 +512,20 @@ read_devs() {
       
       if [ -n "$SELECTION" -a -z "$3" ]; then
         echo "*** Only one block device may be entered ***" 1>&2
-        DEFAULT="$REPLY"
-        SELECTION=
-        continue 2
+
       elif ! contains_word "$AVAILABLE_DEVS" "$P"; then
         echo "*** Device is mounted or has a holder or is unknown: $P ***" 1>&2
-        DEFAULT="$REPLY"
-        SELECTION=
-        continue 2
+
       else
+        # Valid device
         SELECTION="$SELECTION $P"
+        continue
       fi
+
+      # Invalid device, repeat input
+      DEFAULT="$REPLY"
+      SELECTION=
+      continue 2
     done
   done
 
@@ -952,6 +961,73 @@ mount_devs() {
 
 # --------------------------------------------------------------------------
 
+# Writes the file system configuration files to the target system.
+#
+# Arguments:
+#   variables defined in $CONFIG_FILE
+#   many more...
+#
+write_config_files() {
+  # Create /etc/fstab
+  mkdir -p $TARGET/etc
+  echo -e "$FSTAB" > $TARGET/etc/fstab
+
+  # Boot-time decryption
+  if [[ ! "${ENCRYPTED[*]}" =~ $BLANK_RE ]]; then
+    # Copy keyscript to initramfs
+    mkdir -p ${TARGET}$(dirname $KEY_SCRIPT)
+    cp -f "$HERE/${SCRIPT_NAME}.keyscript" ${TARGET}$KEY_SCRIPT
+    chmod 700 ${TARGET}$KEY_SCRIPT
+    initramfs_hook crypt -c $KEY_SCRIPT -x $(which keyctl) -x $(which gpg) -c /usr/share/gnupg/options.skel
+
+    # Create /etc/crypttab using keyscript authentication
+    mkdir -p $TARGET/etc
+    echo -e "$CRYPTTAB" > $TARGET/etc/crypttab
+  fi
+
+  # udev rule for RAID arrays
+  if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]]; then
+    # Add udev rule to adjust drive/driver error timeouts
+    mkdir -p ${TARGET}$(dirname $RAID_RULE_FILE)
+    cp -f "$HERE/${SCRIPT_NAME}.mdraid-rule" ${TARGET}$RAID_RULE_FILE
+    chmod 644 ${TARGET}$RAID_RULE_FILE
+
+    # Copy udev helper script to initramfs
+    mkdir -p ${TARGET}$(dirname $RAID_HELPER_FILE)
+    cp -f "$HERE/${SCRIPT_NAME}.mdraid-helper" ${TARGET}$RAID_HELPER_FILE
+    chmod 755 ${TARGET}$RAID_HELPER_FILE
+
+    initramfs_hook mdraid-helper -c $RAID_RULE_FILE -c $RAID_HELPER_FILE -x $(which smartctl)
+  fi
+
+  # Standard bcache udev rule seems to fail sometimes for RAIDs, therefore ...
+  if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_RE ]]; then
+    # Override default udev rule with custom rule
+    BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
+    mkdir -p ${TARGET}$(dirname $BCACHE_RULE_FILE)
+    cp -f "$HERE/${SCRIPT_NAME}.bcache-rule" ${TARGET}$BCACHE_RULE_FILE
+    chmod 644 ${TARGET}$BCACHE_RULE_FILE
+
+    # Copy udev helper script to initramfs
+    mkdir -p ${TARGET}$(dirname $BCACHE_HELPER_FILE)
+    cp -f "$HERE/${SCRIPT_NAME}.bcache-helper" ${TARGET}$BCACHE_HELPER_FILE
+    chmod 755 ${TARGET}$BCACHE_HELPER_FILE
+    echo -e "$BCACHE_HINTS" > ${TARGET}$BCACHE_HINT_FILE
+    chmod 644 ${TARGET}$BCACHE_HINT_FILE
+
+    initramfs_hook bcache-helper -c $BCACHE_RULE_FILE -c $BCACHE_HELPER_FILE -c $BCACHE_HINT_FILE -x $(which bcache-super-show)
+  fi
+
+  # Copy test script
+  TARGET_TEST_SCRIPT=/usr/local/sbin/${SCRIPT_NAME}-test.sh
+  mkdir -p ${TARGET}$(dirname $TARGET_TEST_SCRIPT)
+  cp -f "$TEST_SCRIPT" ${TARGET}$TARGET_TEST_SCRIPT
+  chmod 755 ${TARGET}$TARGET_TEST_SCRIPT
+}
+
+
+# --------------------------------------------------------------------------
+
 # Prints usage information and an optional error message to stdout or stderr
 # and exits with error code 0 or 1, respectively.
 #
@@ -981,10 +1057,10 @@ rely on a passphrase, a plaintext key file (may be located on an
 encrypted partition) or an encrypted key file (two-factor
 authentication).
 
-Optionally, a minimal bootable $DISTRIB_DESCRIPTION can be installed
-onto the target storage.
+Optionally, a basic bootable $DISTRIB_DESCRIPTION can be installed,
+or an existing system.
 
-Usage: $SCRIPT -b|-m [-i] [-y] [-d] [<config-file>]
+Usage: $SCRIPT [-b|-m] [-i|-c <source>] [-y] [-d] [<config-file>]
        $SCRIPT -u [-y] [<config-file>]
        $SCRIPT -h
 
@@ -997,13 +1073,19 @@ Usage: $SCRIPT -b|-m [-i] [-y] [-d] [<config-file>]
         point specified in <config-file>. Host devices required for
         chrooting are also mounted. Existing data on the underlying
         block devices will be overwritten.
+    -i  Installs a basic bootable $DISTRIB_DESCRIPTION onto the
+        target storage, with the same architecture as the host system.
+    -c  Clones an existing $DISTRIB_DESCRIPTION system from the
+        <source> mount point which may be local or on a remote host.
+        Such a remote host must be an rsync server, and the remote
+        <source> must be in a form recognizable by rsync.
+        The source system should *not* be running and should also be
+        an $DISTRIB_DESCRIPTION system.
     -m  (Re-)Mounts a previously built target storage at the mount
         point specified in <config-file>. Host devices required for
         chrooting are also mounted. See -u for unmounting.
     -u  Unmounts everything from the target storage mount point and
         stops encryption, caching and RAIDs on the underlying devices.
-    -i  Installs a minimal bootable $DISTRIB_DESCRIPTION onto the
-        target storage, with the same architecture as the host system.
     -y  Batch mode: accepts default responses automatically, fails if
         any input beyond that is required. Use with caution.
     -d  Debug mode: pauses the script at various stages and makes the
@@ -1130,10 +1212,11 @@ _unlock_devs() {
 OPTIONS=
 BATCH_MODE=
 DEBUG_MODE=
+CLONE_SRC=
 
-while getopts hbmiydu OPT; do
+while getopts hbmicydu OPT; do
   case "$OPT" in
-    h|b|m|i|u)
+    h|b|m|i|c|u)
       OPTIONS="$OPTIONS $OPT"
       ;;
     y)
@@ -1154,6 +1237,7 @@ BUILD_GOAL=
 MOUNT_GOAL=
 UNMOUNT_GOAL=
 INSTALL_GOAL=
+CLONE_GOAL=
 FRIENDLY_GOAL=
 
 case "$OPTIONS" in
@@ -1167,7 +1251,12 @@ case "$OPTIONS" in
   'b i')
     BUILD_GOAL=1
     INSTALL_GOAL=1
-    FRIENDLY_GOAL='build and install'
+    FRIENDLY_GOAL="build and install $DISTRIB_DESCRIPTION to"
+    ;;
+  'c b')
+    BUILD_GOAL=1
+    CLONE_GOAL=1
+    FRIENDLY_GOAL="build and clone to"
     ;;
   m)
     MOUNT_GOAL=1
@@ -1176,7 +1265,12 @@ case "$OPTIONS" in
   'i m')
     MOUNT_GOAL=1
     INSTALL_GOAL=1
-    FRIENDLY_GOAL='mount and install'
+    FRIENDLY_GOAL="mount and install $DISTRIB_DESCRIPTION to"
+    ;;
+  'c m')
+    MOUNT_GOAL=1
+    CLONE_GOAL=1
+    FRIENDLY_GOAL="mount and clone to"
     ;;
   u)
     UNMOUNT_GOAL=1
@@ -1222,6 +1316,10 @@ PREFIX=
 TARGET_HOSTNAME=$HOSTNAME
 TARGET_USERNAME=
 TARGET_PWHASH=
+SRC_HOSTNAME=
+SRC_PORT=22
+SRC_USERNAME=
+SRC_DIR=
 
 # Repeat configuration until confirmed by user
 while true; do
@@ -1298,7 +1396,7 @@ EOF
       case "${FS_TYPES[$NUM_FS]}" in
         btrfs)
           # Each mount point becomes a subvolume
-          MOUNT_POINTS[$NUM_FS]=$(read_dirpaths '    Mount points (become top-level subvolumes with leading '@'): ' "$DEFAULT" multiple)
+          MOUNT_POINTS[$NUM_FS]=$(read_dirpaths '    Mount points (become top-level subvolumes with leading '@'): ' "$DEFAULT" multiple verify)
           ;;
         swap)
           # No mount point
@@ -1306,7 +1404,7 @@ EOF
           ;;
         *)
           # Single mount point
-          MOUNT_POINTS[$NUM_FS]=$(read_dirpaths '    Mount point: ' "$DEFAULT")
+          MOUNT_POINTS[$NUM_FS]=$(read_dirpaths '    Mount point: ' "$DEFAULT" '' verify)
           ;;
       esac
 
@@ -1439,7 +1537,7 @@ EOF
 
     # Target system's hostname, username and password
     if [ "$INSTALL_GOAL" ]; then
-      TARGET_HOSTNAME=$(read_text 'Hostname: ' "$TARGET_HOSTNAME" '[A-Za-z][A-Za-z0-9_-]*')
+      TARGET_HOSTNAME=$(read_text 'Hostname: ' "$TARGET_HOSTNAME" '[A-Za-z][A-Za-z0-9_.-]*')
 
       PREV_USERNAME=$TARGET_USERNAME
       TARGET_USERNAME=$(read_text "Username (empty to copy host user '$SUDO_USER'): " "$TARGET_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
@@ -1452,6 +1550,24 @@ EOF
         # Copy current user and login passphrase
         TARGET_USERNAME=$SUDO_USER
         TARGET_PWHASH=$(grep $SUDO_USER /etc/shadow | cut --delimiter ':' --fields 2)
+      fi
+    fi
+
+    # Source for cloning
+    if [ "$CLONE_GOAL" ]; then
+      SRC_HOSTNAME=$(read_text 'Remote host to clone from (empty for a local directory): ' "$SRC_HOSTNAME" '([A-Za-z][A-Za-z0-9_.-]*)?')
+
+      if [ "$SRC_HOSTNAME" ]; then
+        # Remote source (verified later)
+        SRC_PORT=$(read_int 'Remote SSH port: ' "$SRC_PORT" 1 65535)
+        SRC_USERNAME=$(read_text 'Remote username (required only if password authentication): ' "$SRC_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
+        SRC_DIR=$(read_dirpaths 'Remote directory to clone from: ' "$SRC_DIR")
+
+      else
+        # Local source
+        SRC_PORT=
+        SRC_USERNAME=
+        SRC_DIR=$(read_dirpaths 'Directory to clone from: ' "$SRC_DIR" '' verify)
       fi
     fi
   fi
@@ -1525,7 +1641,7 @@ EOF
  
   # Warn if there are multiple swap file systems
   if [[ $(sorted_duplicates ${FS_TYPES[@]}) == *swap* ]]; then
-    echo "*** Multiple swap file systems prevent hibernation. Consider using a RAID 0. ***" 1>&2
+    echo "*** Multiple swap file systems prevent hibernation. Consider a RAID 0 instead. ***" 1>&2
   fi
 
   # Root mount point for root file system?
@@ -1556,7 +1672,7 @@ EOF
     ERROR=1
   fi
 
-  if [ "$INSTALL_GOAL" ]; then
+  if [ "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
     # Attempting to cache the boot file system?
     if [ "${CACHED_BY[$BOOT_DEV_INDEX]}" ]; then
       echo "*** The /boot file system must not be cached: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
@@ -1568,16 +1684,76 @@ EOF
       echo "*** The /boot file system must not be encrypted using a key file: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
       ERROR=1
     fi
+  fi
 
+  if [ "$INSTALL_GOAL" ]; then
     # Username (and password) specified?
     if [ ! "$TARGET_USERNAME" ]; then
-      echo '*** Target username is missing ***'
+      echo '*** Target username is missing ***' 1>&2
       ERROR=1
     fi
     
-    # Get host's package repository
+    # We will need the host's package repository
     REPO=$(grep -m 1 -o -E 'https?://.*(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
       || die 'No Ubuntu repository URL found in /etc/apt/sources.list'
+  fi
+
+  if [ "$CLONE_GOAL" ]; then
+    # Cloning from a remote host?
+    if [ "$SRC_HOSTNAME" ]; then
+      install_pkg openssh-client
+
+      # Options for SSH master connection
+      # Everything would be *much* easier if CONFIG_FILE could not contain spaces...
+      SSH_SOCKET="${CONFIG_FILE}:${SRC_HOSTNAME}:${SRC_PORT}:${SRC_USERNAME}"
+      SSH_OPTS="-o ControlMaster=auto -o ControlPersist=$PW_EXPIRATION"
+      [ "$SRC_PORT" ] && SSH_OPTS="$SSH_OPTS -p $SRC_PORT"
+      [ "$SRC_USERNAME" ] && SSH_OPTS="$SSH_OPTS -l $SRC_USERNAME"
+
+      # Prepare to close a new master connection on exit
+      CLEANUP_SSH=
+      ssh -S "$SSH_SOCKET" -O check $SRC_HOSTNAME 2>/dev/null || CLEANUP_SSH=1
+
+      # Establish or re-use the master connection and check for the remote directory
+      STATUS=0
+      SRC_PREAMBLE='ssh -S'
+      $SRC_PREAMBLE "$SSH_SOCKET" $SSH_OPTS $SRC_HOSTNAME [ -d "$SRC_DIR" ] || STATUS=$?
+      
+      if [ $STATUS -gt 1 ]; then
+        # Master connection not established
+        echo "*** Unable to connect to '$SRC_HOSTNAME' ***" 1>&2
+        ERROR=1
+
+      else
+        # If the master connection was just established then close it on exit
+        [ "$CLEANUP_SSH" ] && on_exit "Terminating SSH connection: $SSH_SOCKET" \
+          "ssh -S '$SSH_SOCKET' -O exit $SRC_HOSTNAME 2>/dev/null"
+
+        if [ $STATUS -eq 1 ]; then
+          # Master connection established, directory not found
+          echo "*** Remote source directory '$SRC_DIR' not found ***" 1>&2
+          ERROR=1
+        fi
+      fi
+
+    else
+      # Local directory must exist
+      if [ ! -d "$SRC_DIR" ]; then
+        echo "*** Source directory '$SRC_DIR' not found ***" 1>&2
+        ERROR=1
+      fi
+
+      STATUS=0
+      SSH_SOCKET=
+      SRC_PREAMBLE=eval
+    fi
+
+    # Verify that a physical device is mounted at SRC_DIR
+    if [ $STATUS -eq 0 ] && ! $SRC_PREAMBLE "$SSH_SOCKET" $SRC_HOSTNAME \
+      "findmnt -n -l -o TARGET,SOURCE -R $SRC_DIR | grep -q -E $SRC_DIR'[[:space:]]+/dev/'"; then
+      echo "*** No device mounted at source directory '$SRC_DIR' ***" 1>&2
+      ERROR=1
+    fi
   fi
 
   if [ "$ERROR" ]; then
@@ -1593,6 +1769,7 @@ EOF
   if [ ! "$BATCH_MODE" ]; then
 
     cat <<- EOF
+
 Configuration summary
 =====================
 
@@ -1653,11 +1830,20 @@ EOF
         "Username:               $TARGET_USERNAME"
     fi
 
+    if [ "$CLONE_GOAL" ]; then
+      echo \
+        "Cloning from:           $SRC_DIR"
+      [ "$SRC_HOSTNAME" ] && echo \
+        "  on remote host:       $SRC_HOSTNAME:$SRC_PORT"
+      [ "$SRC_USERNAME" ] && echo \
+        "  user:                 $SRC_USERNAME"
+    fi
+
     echo ''
 
-    if [ -n "$BUILD_GOAL" -o -n "$INSTALL_GOAL" ]; then
+    if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
       echo "*** WARNING: existing data on ${ALL_DEVS// /, } will be overwritten! ***"$'\n'
-      [ "$INSTALL_GOAL" ] && echo "*** WARNING: MBR on ${BOOT_DEVS// /, } will be overwritten! ***"$'\n'
+      [ "${INSTALL_GOAL}${CLONE_GOAL}" ] && echo "*** WARNING: MBR on ${BOOT_DEVS// /, } will be overwritten! ***"$'\n'
     fi
     confirmed "About to $FRIENDLY_GOAL this configuration -- proceed" "$BATCH_MODE" || continue
   fi
@@ -1671,12 +1857,13 @@ EOF
 
   for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS FS_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
       ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
-      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH; do
+      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH \
+      SRC_HOSTNAME SRC_PORT SRC_USERNAME SRC_DIR; do
     echo "$(declare -p $V)" >> "$CONFIG_FILE"
   done
 
   # For encryption, save the LUKS key to the keyring
-  if [ -n "$BUILD_GOAL" -o -n "$MOUNT_GOAL" ]; then
+  if [ "${BUILD_GOAL}${MOUNT_GOAL}" ]; then
     KEY_DESC="key:$CONFIG_FILE"
 
     case $AUTH_METHOD in
@@ -1688,7 +1875,7 @@ EOF
       2)
         # Save key file content to keyring
         KEY_ID=$(cat "$KEY_FILE" | keyctl padd user "$KEY_DESC" @u)
-        on_exit "Revoking LUKS key" "keyctl revoke $KEY_ID"
+        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
 
       3)
@@ -1699,7 +1886,7 @@ EOF
           PW_ID=
         done
         
-        on_exit "Revoking LUKS key" "keyctl revoke $KEY_ID"
+        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
     esac
   fi
@@ -1890,14 +2077,14 @@ for (( I=0; I<$NUM_FS; I++ )); do
     MAPPED=${MAPPED_DEV#/dev/mapper/}
     LUKS_DEV=${FS_DEVS[$I]}
     echo "Mapping LUKS device $LUKS_DEV to $MAPPED_DEV"
-    [ "$BUILD_GOAL" ] && format_luks $LUKS_DEV $MAPPED
+    [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ] && format_luks $LUKS_DEV $MAPPED
     keyctl pipe $KEY_ID | cryptsetup --key-file - luksOpen $LUKS_DEV $MAPPED
     FS_DEVS[$I]=$MAPPED_DEV
   fi
 done
 
-# Create file systems
-if [ "$BUILD_GOAL" ]; then
+# (Re-)Create file systems
+if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
   for (( I=0; I<$NUM_FS; I++ )); do
     FS_DEV=${FS_DEVS[$I]}
     FS_TYPE=${FS_TYPES[$I]}
@@ -1909,7 +2096,7 @@ if [ "$BUILD_GOAL" ]; then
     wipefs -a $FS_DEV
     
     case $FS_TYPE in
-      ext*|xfs)
+      ext[234]|xfs)
         [ $FS_TYPE = xfs ] && install_pkg -t xfsprogs
         mkfs.$FS_TYPE -L ${PREFIX}${LABEL} $FS_DEV
         sleep 1
@@ -1923,7 +2110,7 @@ if [ "$BUILD_GOAL" ]; then
 
         echo "Creating subvolume(s) ${MP[@]/\//@} for $FS_DEV"
         TMP_MP=$(mktemp -d)
-        on_exit "Removing temporary mount point $TMP_MP", "rmdir $TMP_MP"
+        on_exit "Removing temporary mount point: $TMP_MP", "rmdir $TMP_MP"
         mount $FS_DEV ${TMP_MP}/
 
         for M in ${MP[@]}; do
@@ -1959,7 +2146,7 @@ for MP in $(sorted_unique ${MOUNT_POINTS[@]}); do
       MO=${MOUNT_OPTIONS[$I]}
 
       case $FS_TYPE in
-        ext*|xfs)
+        ext[234]|xfs)
           echo "Mounting $FS_DEV at $TARGET$MP"
           mkdir -p $TARGET$MP
           mount -o "$MO" $FS_DEV $TARGET$MP
@@ -1999,8 +2186,7 @@ echo "$(declare -p FS_DEVS_UUIDS)" >> "$CONFIG_FILE"
 echo "$(declare -p CACHED_BY_UUIDS)" >> "$CONFIG_FILE"
 
 # Create test script
-TEST_SCRIPT=$(basename "$CONFIG_FILE")
-TEST_SCRIPT="$(dirname '$CONFIG_FILE')/${TEST_SCRIPT%.*}-test.sh"
+TEST_SCRIPT="${CONFIG_FILE}-test.sh"
 [ ! -f "$TEST_SCRIPT" ] && echo "Creating test script '$TEST_SCRIPT'"
 sudo --user=$SUDO_USER truncate -s 0 "$TEST_SCRIPT"
 echo '#!/bin/bash' >> "$TEST_SCRIPT"
@@ -2008,7 +2194,7 @@ cat "$CONFIG_FILE" >> "$TEST_SCRIPT"
 cat "$HERE/${SCRIPT_NAME}.fio" >> "$TEST_SCRIPT"
 chmod 755 "$TEST_SCRIPT"
 
-if [ ! "$INSTALL_GOAL" ]; then
+if [ ! "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
   # Mount the target file system for chroot-ing
   mount_devs
   echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"
@@ -2018,21 +2204,23 @@ fi
 
 # -------------------- Install and configure target system ---------------
 
-breakpoint "Target file system mounted at $TARGET, about to install a minimal $DISTRIB_DESCRIPTION"
+if [ "$INSTALL_GOAL" ]; then
+  breakpoint "Target file system mounted at $TARGET, about to install a basic $DISTRIB_DESCRIPTION"
 
-# Install a minimal Ubuntu, plus debconf-utils for debconf-get-selections
-# (needs 'universe' which might not be a package repository on the host)  
-install_pkg debootstrap
-debootstrap \
-  --arch $(dpkg --print-architecture) \
-  --components main,universe \
-  --include language-pack-${LANG%%_*},debconf-utils \
-  $DISTRIB_CODENAME $TARGET $REPO
+  # Install a basic Ubuntu, plus debconf-utils for debconf-get-selections
+  # (needs 'universe' which might not be a package repository on the host)  
+  install_pkg debootstrap
 
-breakpoint "Minimal $DISTRIB_DESCRIPTION installed, about to configure target system"
+  debootstrap \
+    --arch $(dpkg --print-architecture) \
+    --components main,universe \
+    --include language-pack-${LANG%%_*},debconf-utils \
+    $DISTRIB_CODENAME $TARGET $REPO
 
-mkdir -p $TARGET/etc/apt
-cat > $TARGET/etc/apt/sources.list <<-EOF
+  breakpoint "Basic $DISTRIB_DESCRIPTION installed, about to configure target system"
+
+  mkdir -p $TARGET/etc/apt
+  cat > $TARGET/etc/apt/sources.list <<-EOF
 # Ubuntu Main Repos
 deb $REPO ${DISTRIB_CODENAME} main restricted universe multiverse 
 deb $REPO ${DISTRIB_CODENAME}-security main restricted universe multiverse 
@@ -2043,122 +2231,128 @@ deb $REPO ${DISTRIB_CODENAME}-backports main restricted universe multiverse
 deb http://archive.canonical.com/ubuntu/ ${DISTRIB_CODENAME} partner
 EOF
 
-# Create /etc/fstab
-mkdir -p $TARGET/etc
-echo -e "$FSTAB" > $TARGET/etc/fstab
+  # Write configuration files
+  write_config_files
 
-# Boot-time decryption
-if [[ ! "${ENCRYPTED[*]}" =~ $BLANK_RE ]]; then
-  # Copy keyscript to initramfs
-  mkdir -p ${TARGET}$(dirname $KEY_SCRIPT)
-  cp -f "$HERE/${SCRIPT_NAME}.keyscript" ${TARGET}$KEY_SCRIPT
-  chmod 700 ${TARGET}$KEY_SCRIPT
-  initramfs_hook crypt -c $KEY_SCRIPT -x $(which keyctl) -x $(which gpg) -c /usr/share/gnupg/options.skel
+  # Save certain host debconf settings
+  mkdir -p ${TARGET}/tmp
+  DEBCONF=/tmp/debconf-selections
+  on_exit "Removing temporary files: ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
+  ${TARGET}/usr/bin/debconf-get-selections \
+    | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
+  cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
 
-  # Create /etc/crypttab using keyscript authentication
-  mkdir -p $TARGET/etc
-  echo -e "$CRYPTTAB" > $TARGET/etc/crypttab
+  # chroot into the target
+  mount_devs
+  echo "Configuring target system: chrooting into $TARGET"
+
+  if ! chroot $TARGET /bin/bash -l <<- EOF
+		set -e +x
+    export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
+
+    # Upgrade to the latest kernel version
+    echo 'Upgrading to the latest kernel version'
+    apt-get -y -q update
+    apt-get -y -q upgrade
+    apt-get -y -q --reinstall --no-install-recommends install linux-image-generic linux-headers-generic linux-tools-generic
+
+    # Set hostname
+    echo '$TARGET_HOSTNAME' > /etc/hostname
+    echo -e 'PRETTY_HOSTNAME=$TARGET_HOSTNAME\nICON_NAME=computer\nCHASSIS=desktop\nDEPLOYMENT=production' > /etc/machine-info
+    sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
+
+    # Install required packages
+    echo 'Installing required packages'
+    locale-gen $LANG
+    apt-get -y -q --no-install-recommends install \
+      network-manager nano man-db plymouth-themes \
+      console-data console-setup bash-completion fio grub-pc os-prober \
+      $(sorted_unique $TARGET_PKGS)
+      
+    # Configure locale, timezone, console and keyboard (crude but working)
+    update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
+
+    # Needed in addition to debconf-set-selections
+    cp -fp /tmp/{localtime,timezone} /etc || true
+    cp -fp /tmp/default/{keyboard,console-setup} /etc/default
+    cp -fpR /tmp/console-setup /etc
+    
+    debconf-set-selections $DEBCONF
+    for P in tzdata keyboard-configuration console-data console-setup; do
+      dpkg-reconfigure -f noninteractive \$P
+    done
+
+    # Create user
+    echo "Creating user '$TARGET_USERNAME'"
+    useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
+    echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
+EOF
+
+  then
+    die 'Target system configuration failed'
+  fi
 fi
 
-# udev rule for RAID arrays
-if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]]; then
-  # Add udev rule to adjust drive/driver error timeouts
-  mkdir -p ${TARGET}$(dirname $RAID_RULE_FILE)
-  cp -f "$HERE/${SCRIPT_NAME}.mdraid-rule" ${TARGET}$RAID_RULE_FILE
-  chmod 644 ${TARGET}$RAID_RULE_FILE
 
-  # Copy udev helper script to initramfs
-  mkdir -p ${TARGET}$(dirname $RAID_HELPER_FILE)
-  cp -f "$HERE/${SCRIPT_NAME}.mdraid-helper" ${TARGET}$RAID_HELPER_FILE
-  chmod 755 ${TARGET}$RAID_HELPER_FILE
+# -------------------- Clone and reconfigure target system ---------------
 
-  initramfs_hook mdraid-helper -c $RAID_RULE_FILE -c $RAID_HELPER_FILE -x $(which smartctl)
+if [ "$CLONE_GOAL" ]; then
+  breakpoint "Target file system mounted at $TARGET, about to copy from '$SRC_DIR' on '${SRC_HOSTNAME:-$HOSTNAME}'"
+
+  # Create rsync --exclude options for nodev file systems mounted below $SRC_DIR and for $TARGET
+  AWK_EXCLUDE='$2 !~ "/dev/" { gsub("'$SRC_DIR'/?", "/", $1); printf "--exclude=%s/ ", $1; }'
+  RSYNC_OPTS=$($SRC_PREAMBLE "$SSH_SOCKET" $SRC_HOSTNAME "findmnt -n -l -o TARGET,SOURCE -R $SRC_DIR | awk '$AWK_EXCLUDE'")
+  RSYNC_OPTS="-avAHX --exclude=lost+found/ $RSYNC_OPTS"
+  SRC_OPT=${SRC_DIR%/}/
+  if [ "$SRC_HOSTNAME" ]; then
+    SRC_OPT="${SRC_HOSTNAME}:${SRC_OPT}"
+  else
+    # Prevent $TARGET from being copied onto itself
+    RSYNC_OPTS="$RSYNC_OPTS --exclude=$TARGET"
+  fi
+
+  # Clone the source, preserving hard links, permissions, ACLs and extended attributes
+  # Hard links that would cross file system boundaries on the target cannot be preserved
+  install_pkg rsync
+
+  rsync -e "ssh -S '$SSH_SOCKET'" $RSYNC_OPTS $SRC_OPT $TARGET
+
+  # Deinstall and (re-)install packages in chroot
+  SRC_DESC=$(awk -F '="|=|"' '$1 == "DISTRIB_DESCRIPTION" { print $2 }' $TARGET/etc/lsb-release 2> /dev/null) || SRC_DESC='Unidentified OS'
+  breakpoint "'$SRC_DESC' was copied, about to configure target system"
+
+  mount_devs
+
+  chroot $TARGET /bin/bash -l <<- EOF
+    set -e +x
+    export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
+
+		# Purge packages related to the storage configuration of the source
+		apt-get -y -q purge \
+		  {btrfs,nilfs,f2fs}-tools jfsutils reiserfsprogs xfsprogs ocfs2-* zfs-* \
+		  bcache-tools cachefilesd flashcache-* \
+		  mdadm lvm2 cryptsetup grub-pc os-prober
+
+		# (Re-)Install only the required packages
+		apt-get -y -q --reinstall --no-install-recommends install \
+		  $(sorted_unique $TARGET_PKGS) fio grub-pc os-prober
+EOF
+
+  # Write configuration files
+  write_config_files
 fi
 
-# Standard bcache udev rule seems to fail sometimes for RAIDs, therefore ...
-if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_RE ]]; then
-  # Override default udev rule with custom rule
-  BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
-  mkdir -p ${TARGET}$(dirname $BCACHE_RULE_FILE)
-  cp -f "$HERE/${SCRIPT_NAME}.bcache-rule" ${TARGET}$BCACHE_RULE_FILE
-  chmod 644 ${TARGET}$BCACHE_RULE_FILE
 
-  # Copy udev helper script to initramfs
-  mkdir -p ${TARGET}$(dirname $BCACHE_HELPER_FILE)
-  cp -f "$HERE/${SCRIPT_NAME}.bcache-helper" ${TARGET}$BCACHE_HELPER_FILE
-  chmod 755 ${TARGET}$BCACHE_HELPER_FILE
-  echo -e "$BCACHE_HINTS" > ${TARGET}$BCACHE_HINT_FILE
-  chmod 644 ${TARGET}$BCACHE_HINT_FILE
+# ------------------------- Configure boot loader ------------------------
 
-  initramfs_hook bcache-helper -c $BCACHE_RULE_FILE -c $BCACHE_HELPER_FILE -c $BCACHE_HINT_FILE -x $(which bcache-super-show)
-fi
-
-# Copy test script
-TARGET_TEST_SCRIPT=/usr/local/sbin/${SCRIPT_NAME}-test.sh
-mkdir -p ${TARGET}$(dirname $TARGET_TEST_SCRIPT)
-cp -f "$TEST_SCRIPT" ${TARGET}$TARGET_TEST_SCRIPT
-chmod 755 ${TARGET}$TARGET_TEST_SCRIPT
-
-# Save certain host debconf settings
-mkdir -p ${TARGET}/tmp
-DEBCONF=/tmp/debconf-selections
-on_exit "Removing ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
-${TARGET}/usr/bin/debconf-get-selections \
-  | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
-cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
-
-# chroot into the installation target
-mount_devs
-echo "Configuring target system: chrooting into $TARGET"
-
-if chroot $TARGET /bin/bash -l <<- EOF
+if ! chroot $TARGET /bin/bash -l <<- EOF
 	set -e +x
 
-	LC=${LANG%%_*}
-	export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
-
-	# Upgrade to the latest kernel version
-	echo 'Upgrading to the latest kernel version'
-	apt-get -y -q update
-	apt-get -y -q upgrade
-	apt-get -y -q --reinstall --no-install-recommends install linux-image-generic linux-headers-generic linux-tools-generic
-
-	# Set hostname
-	echo '$TARGET_HOSTNAME' > /etc/hostname
-	echo -e 'PRETTY_HOSTNAME=$TARGET_HOSTNAME\nICON_NAME=computer\nCHASSIS=desktop\nDEPLOYMENT=production' > /etc/machine-info
-	sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
-
-	# Install required packages
-	echo 'Installing required packages'
-	locale-gen $LANG
-	apt-get -y -q --no-install-recommends install \
-	  network-manager nano man-db plymouth-themes \
-	  console-data console-setup bash-completion fio grub-pc os-prober \
-	  $(sorted_unique $TARGET_PKGS)
-	  
-	# Configure locale, timezone, console and keyboard (crude but working)
-	update-locale LANG=$LANG LC_{ADDRESS,ALL,COLLATE,CTYPE,IDENTIFICATION,MEASUREMENT,MESSAGES,MONETARY,NAME,NUMERIC,PAPER,RESPONSE,TELEPHONE,TIME}=$LANG
-
-	# Needed in addition to debconf-set-selections
-	cp -fp /tmp/{localtime,timezone} /etc || true
-	cp -fp /tmp/default/{keyboard,console-setup} /etc/default
-	cp -fpR /tmp/console-setup /etc
-	
-	debconf-set-selections $DEBCONF
-	for P in tzdata keyboard-configuration console-data console-setup; do
-	  dpkg-reconfigure -f noninteractive \$P
-	done
-
-	# Create user
-	echo "Creating user '$TARGET_USERNAME'"
-	useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
-	echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
-
-	# Configure boot loader
-	# GRUB keyboard layout not localized because of questionable benefit, see these links for instructions:
+	# Provide a localized keyboard after booting as early as possible
+	# The GRUB keyboard layout is *not* localized because of questionable benefit, see these links for instructions:
 	# http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#answer-751260
 	# https://wiki.archlinux.org/index.php/Talk:GRUB#Custom_keyboard_layout
-
+	LC=${LANG%%_*}
 	cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX locale=\${LANG%%.*} bootkbd=\$LC console-setup/layoutcode=\$LC"
 GRUB_GFXMODE=1024x768
@@ -2173,14 +2367,14 @@ XEOF
 	# Honor debug options
 	case "$DEBUG_MODE" in
 	  1)
-	    # -d: disable os-prober
+	    # -d: disable os-prober and splash screen
 	    cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX_DEFAULT=
 GRUB_DISABLE_OS_PROBER=true
 XEOF
 	    ;;
 	  2)
-	    # -dd: disable os-prober, drop into initramfs
+	    # -dd: disable os-prober and splash screen, drop into initramfs
 	    cat >> /etc/default/grub <<-XEOF
 # To drop into initramfs: break=top|modules|premount|mount|mountroot|bottom|init
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX break=mount"
@@ -2188,18 +2382,12 @@ GRUB_CMDLINE_LINUX_DEFAULT=
 GRUB_DISABLE_OS_PROBER=true
 XEOF
 	    ;;
-	  *)
-	    # Always disable splash
-	    cat >> /etc/default/grub <<-XEOF
-GRUB_CMDLINE_LINUX_DEFAULT=quiet
-XEOF
-	    ;;
 	esac
 
 	update-initramfs -c -k all
 	update-grub
 
-	# Install boot loader on all devices that comprise /boot
+	# Install the boot loader on all devices that comprise /boot
 	for B in $BOOT_DEVS; do
 	  echo 'Installing boot loader on '\$B
 	  grub-install \$B
@@ -2207,10 +2395,7 @@ XEOF
 EOF
 
 then
-  echo 'Installation finished'
-
-else
-  die 'Target system configuration failed'
+  die 'Boot loader configuration failed'
 fi
 
 echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"
