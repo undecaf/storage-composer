@@ -125,7 +125,7 @@ This will overwrite data on the target devices.
 
 #### Unmounting
 __`sudo stcomp.sh -u [-y] `__
-<b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></n>
+<b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></b>
 
 Unmounts a target system from its current mount point on the host system.
 Use&nbsp;`-y` for unattended unmounting.  
