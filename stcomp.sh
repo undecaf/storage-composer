@@ -130,18 +130,18 @@ breakpoint() {
 
 # --------------------------------------------------------------------------
 
-# Prints a message to sterr and terminates this script with the specified 
-# exit code.
+# Prints a message to sterr, triggers SIGERR and terminates this script
+# with exit code 1.
 #
 # Arguments:
 #   $1  error message
-#   $2  exit code (optional, defaults to 2)
 #
 die() {
-  local EXIT_CODE=2
-  [ "$2" ] && EXIT_CODE="$2"
-  echo $'\n'"****** FATAL: $1 ******" 1>&2
-  exit $EXIT_CODE
+  echo $'\n'"****** FATAL: $1 ******"$'\n' 1>&2
+
+  # Trigger SIGERR and _exit_
+  set -e
+  return 1
 }
 
 
@@ -161,7 +161,7 @@ on_exit() {
   if [ ! -f "$EXIT_SCRIPT" ]; then
     # Prepare the cleanup script
     EXIT_SCRIPT=$(mktemp --tmpdir)
-    trap "{ set +e +x; echo ''; tac $EXIT_SCRIPT | . /dev/stdin; rm $EXIT_SCRIPT; exit; }" EXIT
+    trap "{ set +e; tac $EXIT_SCRIPT | . /dev/stdin; rm $EXIT_SCRIPT; exit; }" EXIT
   fi
 
   local DESC=$1
@@ -256,10 +256,10 @@ read_int() {
 # Ensures that the keyring contains a passphrase for the current 
 # authorization method of the current configuration file and prints the
 # passphrase ID to stdout. Error messages go to stderr.
-# If the keyring contains a passphrase is available then the user may enter
-# a new passphrase or keep the current one. Otherwise, the user must enter
-# a passphrase. Optionally, the user can be prompted to retype the 
-# passphrase for verification.
+# If the keyring contains a passphrase for the current $CONFIG_FILE and
+# $AUTH_METHOD then the user may enter a new passphrase or keep the current
+# one. Otherwise, the user *must* enter a passphrase. Optionally, the user
+# can be prompted to retype the passphrase for validation.
 #
 # Arguments:
 #   $1              initial passphrase prompt (without indentation and
@@ -299,24 +299,24 @@ read_passphrase() {
     read -rsp "$PROMPT: "
     echo '' 1>&2
 
-    # Empty response, and cached passphrase available?
-    [ -z "$REPLY" -a -n "$ID" ] && break
+    # No cached passphrase available, or a new one entered?
+    if [ -z "$ID" -o -n "$REPLY" ]; then
+      # Prompt for verification if so requested
+      while [ "$2" ]; do
+        PW="$REPLY"
+        read -rsp '  Repeat passphrase: '
+        echo '' 1>&2
+        [ "$REPLY" = "$PW" ] && break
 
-    # Prompt for verification if so requested
-    while [ "$2" ]; do
-      PW="$REPLY"
-      read -rsp '  Repeat passphrase: '
-      echo '' 1>&2
-      [ "$REPLY" = "$PW" ] && break
+        echo '  *** Passphrases do not match ***' 1>&2
+        read -rsp "$PROMPT: "
+        echo '' 1>&2
+      done
 
-      echo '  *** Passphrases do not match ***' 1>&2
-      read -rsp "$PROMPT: "
-      echo '' 1>&2
-    done
-
-    # Save (verified) passphrase to keyring
-    ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u 2>/dev/null)
-
+      # Save (verified) passphrase to keyring
+      ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u 2>/dev/null)
+    fi
+    
     # Repeat if passphrase expired while in this loop
     keyctl timeout $ID $PW_EXPIRATION 2>/dev/null && break
     echo '  *** Previous passphrase expired ***' 1>&2
@@ -453,7 +453,7 @@ read_dirpaths() {
         echo "*** Not a directory: $P ***" 1>&2
 
       else
-        # Path is valid
+        # Path is valid, remove trailing slash
         [ "$P" != '/' ] && P=${P%/}
         PATHS="$PATHS $P"
         continue
@@ -966,6 +966,8 @@ mount_devs() {
 # Arguments:
 #   variables defined in $CONFIG_FILE
 #   many more...
+# Calls:
+#   initramfs_hook
 #
 write_config_files() {
   # Create /etc/fstab
@@ -1291,9 +1293,8 @@ CONFIG_FILE="${1:-$DEFAULT_CONFIG_FILE}"
 # Check whether running as root in sudo
 verify_sudo
 
-# Abort and clean up on error
+# Abort on error
 set -e
-trap cleanup ERR
 
 # Configuration variables
 declare -a STORAGE_DEVS
@@ -1320,6 +1321,7 @@ SRC_HOSTNAME=
 SRC_PORT=22
 SRC_USERNAME=
 SRC_DIR=
+SRC_EXCLUDES=
 
 # Repeat configuration until confirmed by user
 while true; do
@@ -1559,16 +1561,18 @@ EOF
 
       if [ "$SRC_HOSTNAME" ]; then
         # Remote source (verified later)
-        SRC_PORT=$(read_int 'Remote SSH port: ' "$SRC_PORT" 1 65535)
-        SRC_USERNAME=$(read_text 'Remote username (required only if password authentication): ' "$SRC_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
-        SRC_DIR=$(read_dirpaths 'Remote directory to clone from: ' "$SRC_DIR")
+        SRC_PORT=$(read_int '  Remote SSH port: ' "$SRC_PORT" 1 65535)
+        SRC_USERNAME=$(read_text '  Remote username (required only if password authentication): ' "$SRC_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
+        SRC_DIR=$(read_dirpaths '  Remote source directory: ' "$SRC_DIR")
 
       else
         # Local source
         SRC_PORT=
         SRC_USERNAME=
-        SRC_DIR=$(read_dirpaths 'Directory to clone from: ' "$SRC_DIR" '' verify)
+        SRC_DIR=$(read_dirpaths '  Source directory: ' "$SRC_DIR" '' verify)
       fi
+
+      SRC_EXCLUDES=$(read_dirpaths '    Subpaths to exclude from copying (optional): ' "$SRC_EXCLUDES" multiple)
     fi
   fi
 
@@ -1833,6 +1837,8 @@ EOF
     if [ "$CLONE_GOAL" ]; then
       echo \
         "Cloning from:           $SRC_DIR"
+      [ "$SRC_EXCLUDES" ] && echo \
+        "  excluded paths:       $SRC_EXCLUDES"
       [ "$SRC_HOSTNAME" ] && echo \
         "  on remote host:       $SRC_HOSTNAME:$SRC_PORT"
       [ "$SRC_USERNAME" ] && echo \
@@ -1858,7 +1864,7 @@ EOF
   for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS FS_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
       ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
       AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH \
-      SRC_HOSTNAME SRC_PORT SRC_USERNAME SRC_DIR; do
+      SRC_HOSTNAME SRC_PORT SRC_USERNAME SRC_DIR SRC_EXCLUDES; do
     echo "$(declare -p $V)" >> "$CONFIG_FILE"
   done
 
@@ -1908,11 +1914,14 @@ done
 DEVS_TO_UNLOCK="$DEVS_TO_UNLOCK $(sorted_unique ${CACHED_BY[@]})"
 DEVS_TO_UNLOCK=${DEVS_TO_UNLOCK//\/dev\//}
 
+# Cean up on error
+trap "cleanup $DEVS_TO_UNLOCK" ERR
+
 cleanup $DEVS_TO_UNLOCK
 [ -d $TARGET ] && [ -n "$(ls -A $TARGET)" ] && die "$TARGET is not empty"
 
 if [ "$UNMOUNT_GOAL" ]; then
-  echo $'\n'"****** Storage unmounted from $TARGET ******"
+  echo $'\n'"****** Storage unmounted from $TARGET ******"$'\n'
   exit
 fi
 
@@ -2197,7 +2206,7 @@ chmod 755 "$TEST_SCRIPT"
 if [ ! "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
   # Mount the target file system for chroot-ing
   mount_devs
-  echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"
+  echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"$'\n'
   exit
 fi
 
@@ -2247,7 +2256,7 @@ EOF
   echo "Configuring target system: chrooting into $TARGET"
 
   if ! chroot $TARGET /bin/bash -l <<- EOF
-		set -e +x
+		set -e
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
     # Upgrade to the latest kernel version
@@ -2303,18 +2312,27 @@ if [ "$CLONE_GOAL" ]; then
   AWK_EXCLUDE='$2 !~ "/dev/" { gsub("'$SRC_DIR'/?", "/", $1); printf "--exclude=%s/ ", $1; }'
   RSYNC_OPTS=$($SRC_PREAMBLE "$SSH_SOCKET" $SRC_HOSTNAME "findmnt -n -l -o TARGET,SOURCE -R $SRC_DIR | awk '$AWK_EXCLUDE'")
   RSYNC_OPTS="-avAHX --exclude=lost+found/ $RSYNC_OPTS"
+  
+  set -f        # do not expand wildcards in exclude paths
+  for P in $SRC_EXCLUDES; do
+    RSYNC_OPTS="$RSYNC_OPTS --exclude=$P"
+  done
+  set +f
+  
   SRC_OPT=${SRC_DIR%/}/
   if [ "$SRC_HOSTNAME" ]; then
     SRC_OPT="${SRC_HOSTNAME}:${SRC_OPT}"
+  
   else
-    # Prevent $TARGET from being copied onto itself
+    # Prevent $TARGET from being copied onto itself when cloning locally
     RSYNC_OPTS="$RSYNC_OPTS --exclude=$TARGET"
   fi
 
-  # Clone the source, preserving hard links, permissions, ACLs and extended attributes
+  # Copy the source, preserving hard links, permissions, ACLs and extended attributes
   # Hard links that would cross file system boundaries on the target cannot be preserved
   install_pkg rsync
 
+echo "************* RSYNC_OPTS=$RSYNC_OPTS"
   rsync -e "ssh -S '$SSH_SOCKET'" $RSYNC_OPTS $SRC_OPT $TARGET
 
   # Deinstall and (re-)install packages in chroot
@@ -2323,8 +2341,8 @@ if [ "$CLONE_GOAL" ]; then
 
   mount_devs
 
-  chroot $TARGET /bin/bash -l <<- EOF
-    set -e +x
+  if ! chroot $TARGET /bin/bash -l <<- EOF
+    set -e
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
 		# Purge packages related to the storage configuration of the source
@@ -2338,6 +2356,10 @@ if [ "$CLONE_GOAL" ]; then
 		  $(sorted_unique $TARGET_PKGS) fio grub-pc os-prober
 EOF
 
+  then
+    die 'Target system configuration failed'
+  fi
+
   # Write configuration files
   write_config_files
 fi
@@ -2346,7 +2368,7 @@ fi
 # ------------------------- Configure boot loader ------------------------
 
 if ! chroot $TARGET /bin/bash -l <<- EOF
-	set -e +x
+	set -e
 
 	# Provide a localized keyboard after booting as early as possible
 	# The GRUB keyboard layout is *not* localized because of questionable benefit, see these links for instructions:
@@ -2398,4 +2420,4 @@ then
   die 'Boot loader configuration failed'
 fi
 
-echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"
+echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"$'\n'

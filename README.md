@@ -6,8 +6,8 @@
   systems, encryption, RAID and SSD caching in almost any combination).
 - __Installs__ a (basic) Ubuntu onto the storage and makes it bootable, even if the
   storage is complex.
-- __Clones__ an existing Ubuntu system and makes it bootable even on a different
-  storage stack.
+- __Clones__ an existing Ubuntu system and makes it bootable on a different
+  storage stack (migrating).
 
 This project started as a simple script for setting up encrypted storage
 for a few PCs. When RAID and caching joined in it got out of control somehow...
@@ -30,35 +30,13 @@ malfunction badly and corrupt your data, therefore:
   - [What you need](#what-you-need)
   - [Disk partitioning](#disk-partitioning)
   - [Running StorageComposer](#running-storagecomposer)
-    - [Building, installing and cloning](#building-installing-and-cloning)
-    - [Mounting](#mounting)
-    - [Unmounting](#unmounting)
-    - [Help](#help)
   - [Configuring the target system](#configuring-the-target-system)
-    - [File systems](#file-systems)
-    - [Authorization](#authorization)
-    - [Global settings](#global-settings)
-    - [Installing](#installing)
-    - [Cloning](#cloning)
   - [Is it reliable? Testing](#is-it-reliable-testing)
-    - [Running tests](#running-tests)
-    - [Customize testing](#customize-testing)
 - [Examples](#examples)
   - [Plain file systems](#plain-file-systems)
-    - [Backup or media storage with ext4](#backup-or-media-storage-with-ext4)
-    - [Bootable btrfs with subvolumes](#bootable-btrfs-with-subvolumes)
-    - [Bootable with OS on SSD, various file systems](#bootable-with-os-on-ssd-various-file-systems)
-   - [RAID](#raid)
-     - [Bootable RAID1](#bootable-raid1)
-     - [Accelerated RAID1 of SSDs and HDDs](#accelerated-raid1-of-ssds-and-hdds)
-     - [Everything RAIDed](#everything-raided)
-   - [Encryption](#encryption)
-     - [Encrypted backup storage](#encrypted-backup-storage)
-     - [“Fully encrypted” bootable system with RAIDs](#fully-encrypted-bootable-system-with-raids)
-   - [Caching](#caching)
-     - [Basic caching](#basic-caching)
-     - [Caching a (slow) bootable, encrypted RAID6](#caching-a-slow-encrypted-raid6)
-     - [Caching multiple encrypted file systems on the same SSD](#caching-multiple-encrypted-file-systems-on-the-same-ssd)
+  - [RAID](#raid)
+  - [Encryption](#encryption)
+  - [Caching](#caching)
 - [FAQ](#faq)
 - [Missing features](#missing-features)
 - [Licenses](#licenses)
@@ -318,8 +296,8 @@ Other settings are inherited from the host system:
 - console setup (character set and font)
 
 #### Cloning
-When [cloning a directory](#building-installing-and-cloning) containing an Ubuntu
-system, the source directory tree is copied to the target and the target system
+When [cloning a directory](#building-installing-and-cloning) which contains an Ubuntu
+system, the source directory tree is copied to the target. Then the target system
 is reconfigured so that it can boot from its storage.
 
 Please note these requirements:
@@ -329,9 +307,10 @@ Please note these requirements:
   source storage stack is complex.
 - Source subdirectories containing _no-device_ file systems such as `proc`,
   `sysfs`, `tmpfs` etc. are not copied.
-- The source system _should not be running_. Otherwise, the target may end up
-  in an inconsistent state. Consequently, there should be a running system
-  containing the source directory as a subdirectory, i.e. not `/`.
+- The source system should be an Ubuntu release supported by StorageComposer but
+  it  _should not be running_. Otherwise, the target may end up
+  in an inconsistent state. Consequently, the source directory should be a 
+  subdirectory in a running system.
 - If the source directory is remote then
   <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html">rsync</a>
   and an <a href="https://help.ubuntu.com/community/SSH">SSH server</a>
@@ -354,13 +333,16 @@ Please note these requirements:
   <p>The authenticated user needs sufficient privileges to read everything within the
   remote source directory.</p></dd>
 
-  <dt><code>Remote directory to clone from:</code>, or<br>
-  <code>Directory to clone from:</code></dt>
-  <dd><p>The directory where the storage of the source system is mounted. The
-  source system should be an Ubuntu release supported by StorageComposer but it
-  <i>should not be running</i>. Otherwise, the target may end up in an
-  inconsistent state.
-  </p></dd>
+  <dt><code>Remote source directory:</code>, or<br>
+  <code>Source directory:</code></dt>
+  <dd><p>The directory where the storage of the source system is mounted.</p></dd>
+  
+  <dt><code>Subpaths to exclude from copying (optional):</code></dt>
+  <dd><p>A space-delimited list of files or directories that are not to be copied
+  to the target. These are paths relative to the source directory but nevertheless
+  must starting with a <code>/</code>.</p>
+  <p>The <a href="#global-settings">Target mount point</a> is never copied (for
+  those among us you who cannot resist cloning a live system after all).</p></dd>
 </dl>
 
 Since the target storage configuration may differ from the source, please be
