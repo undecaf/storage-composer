@@ -190,7 +190,7 @@ friendly_dev() {
   [ -n "$3" ] && DEV=$3
 
   local DEV_OR_PART=partition
-  [ $1 = ${1%%[1-9]} ] && DEV_OR_PART=device
+  [ $1 = ${1%%[1-9*]} ] && DEV_OR_PART=device
 
   local FS_TYPE=$(/sbin/blkid -s TYPE -o value $DEV)
   [ "$FS_TYPE" ] && FS_TYPE=" $FS_TYPE"

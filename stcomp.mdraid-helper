@@ -115,7 +115,7 @@ DRIVE_TIMEOUT_10=$(( DRIVE_TIMEOUT * 10 ))
 
 for D in $(/sbin/mdadm --detail $* | grep -o '/dev/sd[a-z]' | sort -u); do
   # Convert partition to drive if necessary
-  [ $D != ${D%%[1-9]} ] && D=${D%%[1-9]}
+  D=${D%%[1-9]*}
   KNAME=${D#/dev/}
 
   # Get current drive error timeouts if the drive supports them
