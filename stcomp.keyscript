@@ -190,7 +190,7 @@ friendly_dev() {
   [ -n "$3" ] && DEV=$3
 
   local DEV_OR_PART=partition
-  [ $1 = ${1%%[1-9*]} ] && DEV_OR_PART=device
+  [ $DEV = ${DEV%%[1-9]*} ] && DEV_OR_PART=device
 
   local FS_TYPE=$(/sbin/blkid -s TYPE -o value $DEV)
   [ "$FS_TYPE" ] && FS_TYPE=" $FS_TYPE"
@@ -200,16 +200,19 @@ friendly_dev() {
 
   # Determine size
   local SIZE=$(blockdev --getsize64 $DEV)
-  [ "$SIZE" ] || SIZE=0
-  local UNITS=' KMGTP'
+  if [ "$SIZE" ]; then
+    local UNITS=' KMGTP'
 
-  while [ $SIZE -gt 10000 -a -n "$UNITS" ]; do
-    SIZE=$(( SIZE / 1000))
-    UNITS=${UNITS#?}
-  done
+    while [ $SIZE -gt 10000 -a -n "$UNITS" ]; do
+      SIZE=$(( SIZE / 1000))
+      UNITS=${UNITS#?}
+    done
 
-  printf '%s %s %s (%d %cBytes%s%s)' \
-    "$2" "$DEV_OR_PART" "$1" "$SIZE" "$UNITS" "$FS_TYPE" "$LABEL"
+    printf '%s %s %s (%d %cBytes%s%s)' \
+      "$2" "$DEV_OR_PART" "$1" "$SIZE" "$UNITS" "$FS_TYPE" "$LABEL"
+  else
+    printf '%s %s %s' "$2" "$DEV_OR_PART" "$1"
+  fi
 }
 
 
