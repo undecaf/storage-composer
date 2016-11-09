@@ -58,7 +58,7 @@ verify_root() {
 # Arguments:
 #   $1, $2, $3, ...  package name(s)
 #
-install_pkg() {
+require_pkg() {
   for P; do
     dpkg -L "$P" > /dev/null 2>&1 || apt-get --no-install-recommends -q -y install "$P"
   done
@@ -338,7 +338,7 @@ if [ "$CLEANUP" ]; then
 fi
 
 # Install fio
-install_pkg fio \
+require_pkg fio \
   || die "Cannot install fio, is 'universe' repository set in /etc/apt/sources.list?"
 
 # Find all/active swap devices of this configuration

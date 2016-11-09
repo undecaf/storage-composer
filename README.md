@@ -4,14 +4,14 @@
 - __Creates and manages__ disk storage stacks under Ubuntu, from simple 
   (single partition) to complex (multiple drives/partitions, various file 
   systems, encryption, RAID and SSD caching in almost any combination).
-- __Installs__ a (basic) Ubuntu onto the storage and makes it bootable, even if the
-  storage is complex.
-- __Clones__ an existing Ubuntu system and makes it bootable on a different
-  storage stack (migrating).
+  Even the SSD cache can be a RAID.
+- __Installs__ a (basic) Ubuntu onto the storage stack it has created. With a
+  little manual work, you get a full desktop or server Ubuntu.
+- __Clones__ or __migrates__ an existing Ubuntu system and makes it bootable on
+  a different storage stack.
 
 This project started as a simple script for setting up encrypted storage
-for a few PCs. When RAID and caching joined in it got out of control somehow...
-
+for a few PCs and has come a long way since...
 
 ## :warning: WARNING WARNING WARNING :warning:
 Please use this tool only if your are familiar with a Linux shell, disk
@@ -146,24 +146,33 @@ afterwards. For each file system, the following prompts appear in this order:
   <dt><code>RAID level:</code></dt>
   <dd><p>If several partitions were specified then an
   <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a> will be
-  built from these components. Enter the RAID level (<code>0</code>, <code>1</code>,
+  built from these components
+  (using <a href="https://bcache.evilpiepirate.org/">bcache</a>).
+  Enter the RAID level (<code>0</code>, <code>1</code>,
   <code>4</code>, <code>5</code>, <code>6</code> or <code>10</code>). The minimum
   number of components for each level is 2, 2, 3, 3, 4 and 4, respectively.</p>
   <p>A RAID1 consisting of both SSDs and HDDs will prefer reading from the SSDs.
-  This performs similar to an SSD cache.</dd>
+  This performs similar to an SSD cache in
+  <a href="https://wiki.ubuntu.com/ServerTeam/Bcache#A.2BIB0-writethrough.2BIB0_:">
+  <code>writethrough</code></a> mode.</dd>
   
-  <dt><code>SSD caching device (optional):</code></dt>
-  <dd><p>If a partition is specified then it will become a 
-  <a href="https://bcache.evilpiepirate.org/">bcache</a> caching device
-  for this file system. Swap space must not be cached. The same partition can
-  act as a cache for several file systems.</p></dd>
+  <dt><code>Cache partition(s) (optional, two or more make a RAID):</code> and<br>
+  <code>Cache RAID level:</code></dt>
+  <dd><p>Partition(s) entered here become a cache device for this file system. If more than
+  one partition was entered then you are prompted for the cache RAID level, and an
+  <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a>
+  will be built and used as cache device.</p>
+  <p>The same combination of partitions can act as a cache for other file systems,
+  too. Swap space must not be cached.</p></dd>
   
-  <dt><code>Erase block size:</code></dt>
-  <dd><p>Optimum caching performance (supposedly?) depends on choosing the correct
-  <a href="https://wiki.linaro.org/WorkingGroups/KernelArchived/Projects/FlashCardSurvey#Erase_blocks_and_GC_Units">erase block</a> size for your SSD
-  (one of <code>64k</code>, <code>128k</code>, ... <code>16M</code>,
-  <code>32M</code> or <code>64M</code>).
-  SSD data sheets usually do not contain this information, but
+  <dt><code>Bucket size (64k...64M):</code></dt>
+  <dd><p>This is the allocation unit for cache space. It should be set to the
+  <a href="https://wiki.linaro.org/WorkingGroups/KernelArchived/Projects/FlashCardSurvey#Erase_blocks_and_GC_Units">erase block</a> size of the cache 
+  SSD, or to the largest erase block size of the cache RAID components.
+  <code>K</code>, <code>M</code>, <code>G</code> and <code>T</code> can be used
+  as units.</p>
+  <p>Optimum caching performance (supposedly?) depends on choosing the correct
+  setting. SSD data sheets usually do not contain the erase block size, but
   <a href="https://wiki.linaro.org/WorkingGroups/KernelArchived/Projects/FlashCardSurvey#List_of_flash_memory_cards_and_their_characteristics">this survey</a>
   may be helpful. If in doubt, <code>64M</code> is the safest guess but may lead
   to poorer cache space utilization. On the other hand, selecting too small an
@@ -182,11 +191,11 @@ afterwards. For each file system, the following prompts appear in this order:
   <dt><code>File system:</code></dt>
   <dd><p>Select one of <code>ext2</code>, <code>ext3</code>, <code>ext4</code>,
   <code>btrfs</code> or <code>xfs</code>. For additional file systems, 
-  <code>swap</code> is also available.</p></dd>
+  <code>swap</code> is also available and will be used for hibernation.</p></dd>
   
   <dt><code>Mount point:</code>, or<br>
   <code>Mount points (become top-level subvolumes with leading '@'):</code></dt>
-  <dd><p>Enter one or several (only btrfs) mount points, separated by space.
+  <dd><p>Enter one or several (only btrfs) mount points, separated by spaces.
   For each btrfs mount point, a corresponding subvolume will be created. 
   The root file system must have mount point <code>/</code>.</p></dd>
   
@@ -940,8 +949,10 @@ as cache.
 - [Which Ubuntu hosts are supported?](#which-ubuntu-hosts-are-supported)
 - [What about Debian hosts and targets?](#what-about-debian-hosts-and-targets)
 - [Why use an external tool for partitioning?](#why-use-an-external-tool-for-partitioning)
-- [How to install a complete Ubuntu desktop with StorageComposer?](#how-to-install-a-complete-ubuntu-desktop-with-storagecomposer)
+- [How to install a complete Ubuntu desktop or server with StorageComposer?](#how-to-install-a-complete-ubuntu-desktop-or-server-with-storagecomposer)
 - [Which file systems can be created?](#which-file-systems-can-be-created)
+- [How to debug booting after installing or cloning?](#how-to-debug-booting-after-installing-or-cloning)
+- [Is hibernation supported?](#is-hibernation-supported)
 - [What does “SSD erase block size” mean and why should I care?](#what-does-ssd-erase-block-size-mean-and-why-should-i-care)
 - [Can I create a “fully encrypted” target system?](#can-i-create-a-fully-encrypted-target-system)
 - [Do I have to retype my passphrase for each encrypted file system during booting?](#do-i-have-to-retype-my-passphrase-for-each-encrypted-file-system-during-booting)
@@ -968,20 +979,33 @@ is still on the wish list.
 Partitioning tools for Linux are readily available, such as `fdisk`, `gdisk`, `parted`, `GParted` and `QtParted`. Attempting to duplicate their
 functions in StorageComposer did not appear worthwhile.
 
-#### How to install a complete Ubuntu desktop with StorageComposer?
+#### How to install a complete Ubuntu desktop or server with StorageComposer?
 Unfortunalety, I could not make the Ubuntu Live DVD installer work with encrypted and
 cached partitions created by StorageComposer.
 
 Therefore, let StorageComposer install a basic Ubuntu on your target system first.
 Then `chroot` into your target or boot it and install one of these packages:
-`{ed,k,l,q,x,}ubuntu-desktop`. The result is similar but not identical
-to what the Ubuntu installer produces. Most notably, you will have to install
-localization packages such as `language-pack-*` by hand.
+`{ed,k,l,q,x,}ubuntu-desktop` or `ubuntu-server`. The result is
+similar but not identical to what the Ubuntu installer produces. Most notably,
+you will have to install localization packages such as `language-pack-*` by hand.
 
 #### Which file systems can be created?
 Currently [ext2, ext3, ext4](https://ext4.wiki.kernel.org/index.php/Main_Page),
 [btrfs](https://btrfs.wiki.kernel.org/index.php/Main_Page), 
 [xfs](http://xfs.org/index.php/Main_Page) and swap space.
+
+#### How to debug booting after installing or cloning?
+- Adding option `-d` to an install or clone run removes the boot splash screen
+  and displays boot messages.
+- Option `-dd` displays not only boot messages but also drops you into the
+  initramfs shell before any file system is mounted.
+- Use `dmesg` to review the boot messages later. To see only
+  StorageComposer-related messages, use `dmesg | grep -E 'keyscript|bcache|mdraid'`.
+
+#### Is hibernation supported?
+The (largest) swap partition of your configuration will be set up for hiberation
+automatically. Use `sudo pm-hibernate` to test whether hibernation actually
+works on your hardware. 
 
 #### What does “SSD erase block size” mean and why should I care?
 An “erase block” is the smallest unit that a NAND flash can erase (cited from
@@ -1108,7 +1132,7 @@ and find out where it is mounted, if at all.
 Then run `sudo stcomp.sh -u` with a new configuration file. Specify that device
 for the root file system (no caching, no encryption, any file system type) and
 enter the proper mount point (or any empty directory). This will unlock the device.
-Hopefully. Syncing MD/RAIDs can be stubborn.
+Hopefully. MD/RAIDs can be stubborn when syncing.
 
 #### Pressing Ctrl-C at an input prompt leaves my Ubuntu terminal in a mess
 Unfortunately, this is a
@@ -1118,6 +1142,7 @@ in bash. Apparently, the patch did not yet make it into your Ubuntu distribution
 ## Missing features
 - GPT/UEFI support
 - Debian support
+- ZFS support
 - Producing _exactly_ the same result as the Ubuntu/Xubuntu/Kubuntu Live DVD installers
 - Friendly user interface, possibly using Python+PySide or Qt
 
@@ -1159,13 +1184,20 @@ Credits go to the authors and contributors of these documents:
 1. [_Default HDD block error correction timeouts: make entire! drives fail + high risk of data loss during array re-build_](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=780207).
    Debian Bug report #780162, 2015-03-10. Retrieved 2016-10-14.
 
-1. Rath, Nikolaus:
-   [_SSD Caching under Linux_](https://www.rath.org/ssd-caching-under-linux.html).
-   Nikolaus Rath's Website (blog), 2016-02-10. Retrieved 2016-10-18.
-   
 1. Overstreet, Kent:
    [_What is bcache?_](https://bcache.evilpiepirate.org/#index2h1)
    evilpiepirate.org, 2016-08-28. Retrieved 2016-10-14.
+  
+1. Rath, Nikolaus:
+   [_SSD Caching under Linux_](https://www.rath.org/ssd-caching-under-linux.html).
+   Nikolaus Rath's Website (blog), 2016-02-10. Retrieved 2016-10-18.
+
+1. [_Bcache_](https://wiki.ubuntu.com/ServerTeam/Bcache).
+   Ubuntu Wiki, 2014-10-27. Retrieved 2016-11-05.
+   
+1. Wheeler, Eric:
+   [_[BUG] NULL pointer in raid1_make_request passed to bio_trim when adding md as bcache caching dev_](http://www.spinics.net/lists/linux-bcache/msg03519.html).
+   Linux Kernel Mailing List Archive, 2016-03-25. Retrieved 2016-11-03.
    
 1. [_Flash memory card design_](https://wiki.linaro.org/WorkingGroups/KernelArchived/Projects/FlashCardSurvey). Linaro.org Wiki, 2013-02-18.
    Retrieved 2016-10-14.

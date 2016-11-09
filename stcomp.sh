@@ -51,23 +51,22 @@ RAID_RULE_FILE=/etc/udev/rules.d/90-mdraid.rules
 BCACHE_HELPER_FILE=/usr/local/sbin/bcache-helper
 BCACHE_HINT_FILE=$(dirname $BCACHE_HELPER_FILE)/bcache-hints
 
-# File system types to choose from
-AVAILABLE_FS_TYPES='ext2 ext3 ext4 btrfs xfs swap'
-
-# RAID levels available for 0...4 components
-AVAILABLE_RAID_LEVELS=('' '' '0 1' '0 1 4 5' '0 1 4 5 6 10')
-
-# SSD erase block sizes for make-bcache
-AVAILABLE_ERASE_BLOCK_SIZES='64k 128k 256k 512k 1M 2M 4M 8M 16M 32M 64M'
-
 # Friendly names of authorization methods (0 is unused)
 AUTH_METHODS=('' 'passphrase' 'key file' 'encrypted key file')
 
-# Default mount options, applied to host mounts and target system
-declare -A DEFAULT_MOUNT_OPTIONS=([ext2]=relatime,errors=remount-ro [ext3]=relatime [ext4]=relatime [btrfs]=compress=lzo,relatime [xfs]=relatime)
+# Default mount options for each of the available file system types,
+# applied to host mounts and to target system
+declare -A DEFAULT_MOUNT_OPTION_MAP=( \
+  [ext2]=defaults,relatime,errors=remount-ro \
+  [ext3]=defaults,relatime,errors=remount-ro \
+  [ext4]=defaults,relatime,errors=remount-ro \
+  [btrfs]=defaults,relatime \
+  [xfs]=defaults,relatime \
+  [swap]= \
+)
 
 # Maximum waiting time until a device, file etc. becomes available (in s)
-MAX_WAIT=10
+MAX_WAIT=30
 
 # Regexp for an empty or blank string
 BLANK_RE='^[[:space:]]*$'
@@ -96,7 +95,7 @@ verify_sudo() {
 #
 TARGET_PKGS=
 
-install_pkg() {
+require_pkg() {
   local TARGET_OPT
   if [ "$1" = '-t' ]; then
     TARGET_OPT=1
@@ -113,14 +112,14 @@ install_pkg() {
 
 # --------------------------------------------------------------------------
 
-# Displays a message on stdout; pauses this script if in DEBUG_MODE.
+# Displays a message on stdout; pauses this script if in $DEBUG_MODE.
 #
 # Arguments:
 #   $1           message to display
 #   $DEBUG_MODE  enables breakpoints if non-empty
 #
 breakpoint() {
-  echo $'\n'"$1"
+  echo $'\n*** '"$1"
   if [ "$DEBUG_MODE" ]; then
     local REPLY
     read -rp $'\n[Enter] to continue or Ctrl-C to abort: '
@@ -142,6 +141,47 @@ die() {
   # Trigger SIGERR and _exit_
   set -e
   return 1
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints an error message to stderr and sets the global error indicator
+# $ERROR to non-empty.
+#
+# Arguments:
+#   $1  error message
+ERROR=
+
+error() {
+  echo "*** $1 ***" 1>&2
+  ERROR=1
+}
+
+
+# --------------------------------------------------------------------------
+
+# Add a line feed and a warning message to the global $WARNINGS.
+#
+# Arguments:
+#   $1  warning message
+#
+WARNINGS=
+
+warning() {
+  WARNINGS="$WARNINGS"$'\n'"*** $1 ***"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints an information message to stdout.
+#
+# Arguments:
+#   $1  info message
+#
+info() {
+  echo "--- $1"
 }
 
 
@@ -186,8 +226,10 @@ on_exit() {
 # Arguments:
 #   $1           prompt
 #   $2           default value (optional)
-#   $3           space-separated list of valid value regexps (optional)
+#   $3           space-delimited list of valid value regexps (optional)
 #   $BATCH_MODE  non-empty if running not interactively
+# Calls:
+#   die
 #
 read_text() {
   [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
@@ -215,8 +257,10 @@ read_text() {
 
 # --------------------------------------------------------------------------
 
-# Prompts for an integer value and prints that value to stdout. Limits may
-# be specified. Error messages go to stderr.
+# Prompts for an integer and prints that it to stdout. Accepts binary units
+# K, M, G and T as suffixes. Limits may be specified, also with suffixes. 
+# Use to_int() to convert the result to a numeric value.
+# Error messages go to stderr.
 #
 # Arguments:
 #   $1           prompt
@@ -224,26 +268,32 @@ read_text() {
 #   $3           lower limit (optional)
 #   $4           upper limit (optional)
 #   $BATCH_MODE  non-empty if running not interactively
+# Results:
+#   INT_REPLY    numeric value 
+# Calls:
+#   to_int, die
 #
 read_int() {
   [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
 
   local REPLY
-  local DONE=
-  local INT_RE='^[+-]?[0-9]+$'
-  [ ! "$3" ] || [[ "$3" =~ $INT_RE ]] || die "Not an integer: $3"
-  [ ! "$4" ] || [[ "$4" =~ $INT_RE ]] || die "Not an integer: $4"
+  local INT_REPLY
+  [ ! "$3" ] || local MIN=$(to_int "$3") || die "Not an integer: $3"
+  [ ! "$4" ] || local MAX=$(to_int "$4") || die "Not an integer: $4"
 
-  until [ "$DONE" ]; do
+  while true; do
     read -erp "$1" -i "$2"
-    if ! [[ "$REPLY" =~ $INT_RE ]]; then
-      echo "*** Not an integer number: $REPLY ***" 1>&2
-    elif [ -n "$3" ] && [ "$REPLY" -lt $3 ]; then
-      echo "*** Number must be >= $3 ***" 1>&2
-    elif [ -n "$4" ] && [ "$REPLY" -gt $4 ]; then
-      echo "*** Number must be <= $4 ***" 1>&2
+
+    if INT_REPLY=$(to_int "$REPLY"); then
+      if [ -n "$3" ] && [ "$INT_REPLY" -lt $MIN ]; then
+        echo "*** Value must be >= $3 ***" 1>&2
+      elif [ -n "$4" ] && [ "$INT_REPLY" -gt $MAX ]; then
+        echo "*** Value must be <= $4 ***" 1>&2
+      else
+        break
+      fi
     else
-      DONE=1
+      echo "*** Not an integer, or unknown unit: $REPLY ***" 1>&2
     fi
   done
 
@@ -272,10 +322,10 @@ read_int() {
 #                   function)
 #   $BATCH_MODE     non-empty if running not interactively
 # Calls:
-#   install_pkg
+#   require_pkg, die
 #
 read_passphrase() {
-  install_pkg keyutils
+  require_pkg keyutils
 
   local PW_DESC="pw:$CONFIG_FILE:$AUTH_METHOD"
   local ID
@@ -337,12 +387,12 @@ read_passphrase() {
 #   $1              default passphrase hash (optional)
 #   $BATCH_MODE     non-empty if running not interactively
 # Calls:
-#   install_pkg
+#   require_pkg, die
 #
 read_login() {
   [ "$BATCH_MODE" ] && die 'Cannot enter a login passphrase in batch mode'
 
-  install_pkg whois
+  require_pkg whois
 
   local PROMPT='  Login passphrase: '
   [ "$1" ] && PROMPT='  Login passphrase (empty to leave unchanged): '
@@ -381,6 +431,8 @@ read_login() {
 #   $3           a file test of the 'test' command: -r, -d, -e, ... (optional)
 #   $4           allows empty input if present and non-empty (optional)
 #   $BATCH_MODE  non-empty if running not interactively
+# Calls:
+#   die
 #
 read_filepath() {
   [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
@@ -428,6 +480,8 @@ read_filepath() {
 #   $3           allows entering multiple paths if present and non-empty (optional)
 #   $4           verifies that directories exist if present and non-empty (optional)
 #   $BATCH_MODE  non-empty if running not interactively
+# Calls:
+#   die
 #
 read_dirpaths() {
   [ "$BATCH_MODE" ] && die "Cannot enter '$1' in batch mode"
@@ -473,10 +527,10 @@ read_dirpaths() {
 # --------------------------------------------------------------------------
 
 # Prompts for one or several block devices and prints the selection as
-# space-separated device paths to stdout. For brevity, the leading
+# space-delimted device paths to stdout. For brevity, the leading
 # '/dev/' path components may be omitted.They will be added to the output
 # if necessary.  Only unmounted devices having no holders are allowed.
-# Error messages go to stderr.
+# Duplicates are considered invalid. Error messages go to stderr.
 #
 # Arguments:
 #   $1           prompt
@@ -487,7 +541,7 @@ read_dirpaths() {
 #   $BUILD_GOAL  non-empty if building a new storage
 #   $MOUNT_GOAL  non-empty if mounting a storage
 # Calls:
-#   available_devs, contains_word
+#   available_devs, contains_word, sorted_duplicates, die
 #
 read_devs() {
   [ "$BATCH_MODE" ] && die "Cannot reply to '$1' in batch mode"
@@ -496,6 +550,7 @@ read_devs() {
   local SELECTION=
   local DEFAULT=$2
   local REPLY
+  local DUPLICATES
   
   # Repeat until input is valid
   until [ "$SELECTION" ]; do
@@ -513,7 +568,7 @@ read_devs() {
       if [ -n "$SELECTION" -a -z "$3" ]; then
         echo "*** Only one block device may be entered ***" 1>&2
 
-      elif ! contains_word "$AVAILABLE_DEVS" "$P"; then
+      elif ! contains_word $P $AVAILABLE_DEVS; then
         echo "*** Device is mounted or has a holder or is unknown: $P ***" 1>&2
 
       else
@@ -527,6 +582,14 @@ read_devs() {
       SELECTION=
       continue 2
     done
+
+    # Check for duplicates
+    DUPLICATES=$(sorted_duplicates $SELECTION)
+    if [ "$DUPLICATES" ]; then
+      echo "*** Duplicate devices: ${DUPLICATES// /, } ***" 1>&2
+      DEFAULT="$REPLY"
+      SELECTION=
+    fi
   done
 
   echo -n "${SELECTION/ /}"
@@ -543,6 +606,8 @@ read_devs() {
 #   $1           prompt
 #   $2           default value (optional)
 #   $BATCH_MODE  non-empty if running not interactively
+# Calls:
+#   die
 #
 confirmed() {
   local REPLY
@@ -560,14 +625,79 @@ confirmed() {
 
 # --------------------------------------------------------------------------
 
+# Prints a signed integer number to stdout which may be suffixed with a
+# binary unit such as K, M, G or T. Returns 1 if the argument is invalid.
+#
+# Arguments:
+#   $1  integer number; sign and binary unit are optional
+#
+to_int() {
+  shopt -s nocasematch
+  local INT_RE='^([+-]?)([0-9]+)([KMGT]?)$'
+
+  if [[ "$1" =~ $INT_RE ]]; then
+    local SIGN=${BASH_REMATCH[1]}
+    local VALUE=${BASH_REMATCH[2]}
+    local SUFFIX=${BASH_REMATCH[3]}
+
+    for S in '' K M G T; do
+      local S_RE='^'$S'$'
+      [[ "$SUFFIX" =~ $S_RE ]] && break
+      VALUE=$(( VALUE * 1024 ))
+    done
+    
+    echo -n ${SIGN}${VALUE}
+
+  else
+    return 1
+  fi
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints the number of words in a list to stdout.
+#
+# Arguments:
+#   $1, $2, $3, ...  (space-delimited lists of) words
+#
+num_words() {
+  local WORDS=($*)
+  echo -n ${#WORDS[*]}
+}
+
+
+# --------------------------------------------------------------------------
+
 # Returns status 0 iff a white-space-delimited list contains a certain word.
 #
 # Arguments:
-#   $1  space-delimited list of words
-#   $2  word to search for
+#   $1               word to search for
+#   $2, $3, $4, ...  (space-delimited lists of) words
 #
 contains_word() {
-  [[ "$1" =~ (^|[[:space:]]+)"$2"($|[[:space:]]+) ]]
+  local WORD="$1"
+  shift
+  [[ "$*" =~ (^|[[:space:]]+)"$WORD"($|[[:space:]]+) ]]
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints to stdout a list of RAID levels which can be achieved with as many
+# components as are specified as arguments. The components do not have to
+# exist, only the argument count is relevant.
+#
+# Arguments:
+#   $1, $2, $3, ...  RAID components
+#
+
+# RAID levels available for 0...4 components
+AVAILABLE_RAID_LEVELS=('' '' '0 1' '0 1 4 5' '0 1 4 5 6 10')
+
+raid_levels_for() {
+  local NUM_DEVS=$(($# < ${#AVAILABLE_RAID_LEVELS[@]} ? $# : ${#AVAILABLE_RAID_LEVELS[@]} - 1))
+  echo -n "${AVAILABLE_RAID_LEVELS[$NUM_DEVS]}"
 }
 
 
@@ -577,7 +707,7 @@ contains_word() {
 # stdout.
 #
 # Arguments:
-#   $1, $2, $3, ... words
+#   $1, $2, $3, ...  (space-delimited lists of) words
 #
 sorted_unique() {
   echo $* | xargs -n1 | sort -u | xargs
@@ -590,10 +720,10 @@ sorted_unique() {
 # prints the sorted result to stdout.
 #
 # Arguments:
-#   $1, $2, $3, ... partitions (/dev/*[1-9])
+#   $1, $2, $3, ...  (space-delimited lists of) partitions (/dev/*[1-9])
 #
 sorted_unique_disks() {
-  echo $* | xargs -n1 | sed -e 's/[1-9]$//' | sort -u | xargs
+  echo $* | xargs -n1 | sed -r -e 's/[1-9].*$//' | sort -u | xargs
 }
 
 
@@ -602,7 +732,7 @@ sorted_unique_disks() {
 # Sorts the specified words and prints only the duplicates to stdout.
 #
 # Arguments:
-#   $1, $2, $3, ... words
+#   $1, $2, $3, ...  (space-delimited lists of) words
 #
 sorted_duplicates() {
   echo $* | xargs -n1 | sort | uniq -d | xargs
@@ -649,7 +779,7 @@ available_devs() {
     for D in $AVAILABLE_DEVS; do
       dev_dirs $D   
       [ -z "$(/bin/ls -A $HOLDERS_DIR)" ] \
-        && ! contains_word "$(cat /proc/mounts)" "$D" \
+        && ! contains_word $D $(cat /proc/mounts) \
         && continue  
       AVAILABLE_DEVS=${AVAILABLE_DEVS/$D/}
     done
@@ -675,53 +805,74 @@ available_devs() {
 #
 dev_dirs() {
   wait_file $1
-  DEV_DIR=$(find -L /sys/block -maxdepth 2 -type d -name $(basename $(readlink -e $1)))
-  BCACHE_DIR=$DEV_DIR/bcache
-  HOLDERS_DIR=$DEV_DIR/holders
+  declare -g DEV_DIR=$(find -L /sys/block -maxdepth 2 -type d -name $(basename $(readlink -e $1)))
+  declare -g BCACHE_DIR=$DEV_DIR/bcache
+  declare -g HOLDERS_DIR=$DEV_DIR/holders
 }
 
 
 # --------------------------------------------------------------------------
 
-# Prints to stdout the canonical names of the block device(s) that belong
-# to the specified UUID. For RAID UUIDs, this can be several components.
+# Prints to stdout the partition UUID for each block device that was passed
+# as an argument. Block devices for which no partition UUID was found are
+# printed as-is.
 #
 # Arguments:
-#   $1  UUID
+#   $1, $2, $3, ...  block devices (/dev/sd*)
 #
-uuid_to_devs() {
-  if [ "$1" ]; then
-    local DEVS=$(blkid | awk -F ':' /$1/' { printf " %s", $1; }')
-    local CANONICAL
-    local D
-    
-    if [ "$DEVS" ]; then
-      for D in $DEVS; do
-        CANONICAL="$CANONICAL $(readlink -e $D)"
-      done
-    else
-      # Swap space is not picked up by lsblk
-      CANONICAL=$(readlink -e /dev/disk/by-uuid/$1)
-    fi
-    
-    echo -n "${CANONICAL/ /}"
-  fi
+devs_to_parts() {
+  local D
+  local UUIDS=
+  local LSBLK=$(lsblk -n -o NAME,PARTUUID -d /dev/sd[a-z]?* || true)
+
+  for D in $@; do
+    local U=$(echo "$LSBLK" | grep ${D#/dev/}'[[:space:]]' | awk '{ print $2 }')
+    [ "$U" ] || U=$D
+    UUIDS="$UUIDS $U"
+  done
+
+  echo -n "${UUIDS/ /}"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Prints to stdout a device name for each partition UUID that was passed as
+# an argument. If no device can be located for a partition UUID then the
+# UUID itself is printed.
+#
+# Arguments:
+#   $1, $2, $3, ...  partition UUIDs (as generated by devs_to_parts)
+#
+parts_to_devs() {
+  local P
+  local DEVS=
+  local LSBLK=$(lsblk -n -o NAME,PARTUUID -d /dev/sd[a-z]?* || true)
+
+  for P in $@; do
+    local D=$(echo "$LSBLK" | grep -E '(^| )'${P#/dev/}'($| )' | awk '{ printf "/dev/%s", $1 }')
+    [ "$D" ] || D=$P
+    DEVS="$DEVS $D"
+  done
+
+  echo -n "${DEVS/ /}"
 }
 
 
 # --------------------------------------------------------------------------
 
 # Prints the UUID that corresponds to the specified block device to stdout.
+# The block device may one of /dev/mapper/*.
 #
 # Arguments:
-#   $1  device
+#   $1  block device
 #
 dev_to_uuid() {
   if [ "$1" ]; then
     local UUID=$(blkid -p -o value -s UUID "$1" 2>/dev/null)
     # Must not read superblocks to get UUID of /dev/mapper/*
     [ "$UUID" ] || UUID=$(blkid -o value -s UUID "$1" 2>/dev/null)
-    echo "$UUID"
+    echo -n "$UUID"
   fi
 }
 
@@ -734,7 +885,7 @@ dev_to_uuid() {
 # Prints the resulting list to stdout.
 #
 # Arguments:
-#   $1, $2, $3, ...  device paths (/dev/*, ...)
+#   $1, $2, $3, ...  block devices (/dev/*, ...)
 # Calls:
 #   dev_to_uuid
 #
@@ -751,7 +902,7 @@ devs_to_disks_by_uuid() {
     REPLACED_DEVS="$REPLACED_DEVS $DEV"
   done
 
-  echo ${REPLACED_DEVS/ /}
+  echo -n ${REPLACED_DEVS/ /}
 }
 
 
@@ -763,7 +914,7 @@ devs_to_disks_by_uuid() {
 #   $1  block device
 #
 is_ssd() {
-  [ "$(lsblk -dnro RM,ROTA $1 2>/dev/null)" = '0 0' ]
+  [ "$(lsblk -dnro RM,ROTA $1 2>/dev/null || true)" = '0 0' ]
 }
 
 
@@ -786,6 +937,70 @@ mount_point_relative() {
 
 # --------------------------------------------------------------------------
 
+# Translates device names from $STORAGE_DEVS and $CACHED_BY to partition
+# UUIDs that remain valid even if the system is rebooted with a different
+# device naming scheme or if file systems or RAID components are wiped.
+# Saves the partition UUIDs in variables STORAGE_PART_UUIDS and
+# CACHE_PART_UUIDS in $CONFIG_FILE.
+#
+# Arguments:
+#   $STORAGE_DEVS  array of storage device names
+#   $CACHED_BY     array of space-delimited lists of cache device names
+# Results:
+#   CONFIG_FILE    updated
+# Calls:
+#   devs_to_parts
+#
+save_parts() {
+  local -a STORAGE_PART_UUIDS
+  local -a CACHE_PART_UUIDS
+  local I
+
+  for I in ${!STORAGE_DEVS[@]}; do
+    STORAGE_PART_UUIDS[$I]=$(devs_to_parts ${STORAGE_DEVS[$I]})
+  done
+
+  for I in ${!CACHED_BY[@]}; do
+    CACHE_PART_UUIDS[$I]=$(devs_to_parts ${CACHED_BY[$I]})
+  done
+
+  echo "$(declare -p STORAGE_PART_UUIDS)" >> "$CONFIG_FILE"
+  echo "$(declare -p CACHE_PART_UUIDS)" >> "$CONFIG_FILE"
+}
+
+
+# --------------------------------------------------------------------------
+
+# Translates partition UUIDs from $STORAGE_PART_UUIDS and $CACHE_PART_UUIDS
+# to device names in STORAGE_DEVS and CACHED_BY.
+# 
+# Arguments:
+#   $STORAGE_PART_UUIDS  array of storage partition UUIDs
+#   $CACHE_PART_UUIDS    array of space-delimited lists of cache partition
+#                        UUIDs
+# Results:
+#   STORAGE_DEVS         array of storage device names
+#   CACHED_BY            array of space-delimited lists of cache device names
+# Calls:
+#   parts_to_devs
+#
+load_parts() {
+  declare -g -a STORAGE_DEVS  # if not already defined
+  declare -g -a CACHED_BY
+  local I
+
+  for I in ${!STORAGE_PART_UUIDS[@]}; do
+    STORAGE_DEVS[$I]=$(parts_to_devs ${STORAGE_PART_UUIDS[$I]})
+  done
+
+  for I in ${!CACHE_PART_UUIDS[@]}; do
+    CACHED_BY[$I]=$(parts_to_devs ${CACHE_PART_UUIDS[$I]})
+  done
+}
+
+
+# --------------------------------------------------------------------------
+
 # Waits until a file, directory or device exists in the file system and
 # (optionally) the output from this device matches some pattern. Fails and
 # returns exit code 1 if $MAX_WAIT seconds have passed without success.
@@ -796,7 +1011,7 @@ mount_point_relative() {
 #   $MAX_WAIT  maximum waiting time (in seconds)
 #
 wait_file() {
-  local MSG="Waiting for $1 $2 "
+  local MSG="--- Waiting for $1 $2 "
   local ECHO='true'
   local I=$MAX_WAIT
 
@@ -817,6 +1032,77 @@ wait_file() {
   done
 
   $ECHO
+}
+
+
+# --------------------------------------------------------------------------
+
+# Creates or assembles an MD/RAID and saves the name of the resulting
+# RAID device to a variable.
+#
+# Arguments:
+#   $1                space-delimited list of devices (RAID components)
+#   $2                RAID level (1, 4, 5, 6 or 10)
+#   $3                label, becomes part of the resulting RAID device path
+#   $PREFIX           prepended to the label in the device path
+#   $TARGET_HOSTNAME  used as RAID hostname
+#   $BUILD_GOAL       non-empty if building a new storage
+#   $MOUNT_GOAL       non-empty if mounting a storage
+# Results:
+#   MD_DEV            name of the created/asembled RAID device
+# Calls:
+#   require_pkg, new_path, num_words, is_ssd, wait_file
+#   $HERE/${SCRIPT_NAME}.mdraid-helper
+#
+prepare_raid() {
+  require_pkg -t mdadm smartmontools
+
+  declare -g MD_DEV=$(new_path /dev/md/${PREFIX}$3)
+  local NUM_DEVS=$(num_words $1)
+
+  if [ "$BUILD_GOAL" ]; then
+    info "Creating RAID $MD_DEV on homehost $TARGET_HOSTNAME from components ${1// /, }"
+
+    # Mixed SSD/HDD array?
+    local SSD_DEVS=
+    local HDD_DEVS=
+
+    for D in $1; do
+      if is_ssd $D; then
+        SSD_DEVS="$SSD_DEVS $D"
+      else
+        HDD_DEVS="$HDD_DEVS $D"
+      fi
+    done
+
+    SSD_DEVS=${SSD_DEVS/ /}
+    HDD_DEVS=${HDD_DEVS/ /}
+
+    wipefs -a $1
+    if [ $2 -eq 1 -a -n "$SSD_DEVS" -a -n "$HDD_DEVS" ]; then
+      # Mixed SSD/HDD RAID1 array, prefer reading from SSD
+      info "Will prefer reading from ${SSD_DEVS// /, }, writing-behind to ${HDD_DEVS// /, }"
+      yes | mdadm --quiet --create $MD_DEV --level=$2 \
+        --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS $SSD_DEVS \
+        --write-behind --bitmap=internal --write-mostly $HDD_DEVS
+
+    else
+      # SSD-only/HDD-only array
+      yes | mdadm --quiet --create $MD_DEV --level=$2 \
+        --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS $1
+    fi
+    echo ''
+
+    # Wait until device actually available (can take some time while syncing)
+    wait_file $MD_DEV
+
+  elif [ "$MOUNT_GOAL" ]; then
+    info "Assembling RAID $MD_DEV from components ${1// /, }"
+    mdadm --quiet --assemble $MD_DEV $1
+  fi
+
+  # Adjust drive/driver error timeouts on host
+  . "$HERE/${SCRIPT_NAME}.mdraid-helper" $MD_DEV
 }
 
 
@@ -843,7 +1129,7 @@ add_fstab() {
   [[ $1 != /dev/mapper/* ]] && UUID=$(dev_to_uuid $1)
 
   if [ -n "$UUID" ]; then
-    FSTAB="${FSTAB}\n# Device was $1 at installation:"
+    FSTAB="${FSTAB}"$'\n'"# Device was $1 at installation:"
     local DEV="UUID=$UUID"
   else
     local DEV=$1
@@ -851,7 +1137,7 @@ add_fstab() {
 
   local OPTIONS=${4:-defaults}
 
-  FSTAB="${FSTAB}\n$DEV	$2	$3	$OPTIONS	0	$5"
+  FSTAB="${FSTAB}"$'\n'"$DEV	$2	$3	$OPTIONS	0	$5"
 }
 
 
@@ -869,7 +1155,7 @@ add_fstab() {
 #   $MP_REL_KEY_FILE mount point-relative path of <key file> in crypttab entry
 #   $KEY_ID          keyring ID of passphrase
 # Calls:
-#   devs_to_disks_by_uuid, is_ssd
+#   devs_to_disks_by_uuid, is_ssd, contains_word
 #
 
 # /etc/crypttab is being built here
@@ -882,15 +1168,16 @@ format_luks() {
   # Change LUKS authorization method from 1 to 0 for the first occurrence
   # This forces passphrase entry in $KEY_SCRIPT and prevents saving a wrong
   # password to the keyring
-  local AUTH_METHOD_=$AUTH_METHOD
-  [ "$AUTH_METHOD" = 1 ] && ! contains_word "$CRYPTTAB" "0:$MP_REL_KEY_FILE" && AUTH_METHOD_=0
-
-  # Add a 'discard' option for SSDs
-  local DISCARD
-  is_ssd $1 && DISCARD=,discard
+  local ACTUAL_AUTH_METHOD=$AUTH_METHOD
+  [ "$AUTH_METHOD" = 1 ] && ! contains_word "0:$MP_REL_KEY_FILE" "$CRYPTTAB" && ACTUAL_AUTH_METHOD=0
 
   # Add CRYPTTAB entry
-  CRYPTTAB="$CRYPTTAB\n$2 $(devs_to_disks_by_uuid $1) $AUTH_METHOD_:$MP_REL_KEY_FILE luks,initramfs,keyscript=$KEY_SCRIPT,x-systemd.device-timeout=10$DISCARD"
+  CRYPTTAB="$CRYPTTAB"$'\n'"$2 $(devs_to_disks_by_uuid $1) $ACTUAL_AUTH_METHOD:$MP_REL_KEY_FILE luks,initramfs,keyscript=$KEY_SCRIPT,noauto"
+
+  # Add a 'discard' option for SSDs
+  if is_ssd $1; then
+    CRYPTTAB="$CRYPTTAB,discard"
+  fi
 }
 
 
@@ -949,7 +1236,7 @@ EOF
 #   $TARGET      mount point of target file system
 #
 mount_devs() {
-  echo "Mounting devices for chroot-ing into $TARGET"
+  info "Mounting devices for chroot-ing into $TARGET"
   for D in /dev /dev/pts /proc /run/resolvconf /run/lock /sys; do
     mkdir -p ${TARGET}${D}
     mount --bind $D ${TARGET}${D}
@@ -972,7 +1259,7 @@ mount_devs() {
 write_config_files() {
   # Create /etc/fstab
   mkdir -p $TARGET/etc
-  echo -e "$FSTAB" > $TARGET/etc/fstab
+  echo "$FSTAB" > $TARGET/etc/fstab
 
   # Boot-time decryption
   if [[ ! "${ENCRYPTED[*]}" =~ $BLANK_RE ]]; then
@@ -984,7 +1271,7 @@ write_config_files() {
 
     # Create /etc/crypttab using keyscript authentication
     mkdir -p $TARGET/etc
-    echo -e "$CRYPTTAB" > $TARGET/etc/crypttab
+    echo "$CRYPTTAB" > $TARGET/etc/crypttab
   fi
 
   # udev rule for RAID arrays
@@ -1005,7 +1292,7 @@ write_config_files() {
   # Standard bcache udev rule seems to fail sometimes for RAIDs, therefore ...
   if [[ ! "${RAID_LEVELS[*]}" =~ $BLANK_RE ]] && [[ ! "${CACHED_BY[*]}" =~ $BLANK_RE ]]; then
     # Override default udev rule with custom rule
-    BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
+    local BCACHE_RULE_FILE=/etc/udev/rules.d/$(find /lib/udev/rules.d/ -name '*-bcache.rules' -type f -printf '%P')
     mkdir -p ${TARGET}$(dirname $BCACHE_RULE_FILE)
     cp -f "$HERE/${SCRIPT_NAME}.bcache-rule" ${TARGET}$BCACHE_RULE_FILE
     chmod 644 ${TARGET}$BCACHE_RULE_FILE
@@ -1014,14 +1301,14 @@ write_config_files() {
     mkdir -p ${TARGET}$(dirname $BCACHE_HELPER_FILE)
     cp -f "$HERE/${SCRIPT_NAME}.bcache-helper" ${TARGET}$BCACHE_HELPER_FILE
     chmod 755 ${TARGET}$BCACHE_HELPER_FILE
-    echo -e "$BCACHE_HINTS" > ${TARGET}$BCACHE_HINT_FILE
+    echo "$BCACHE_HINTS" > ${TARGET}$BCACHE_HINT_FILE
     chmod 644 ${TARGET}$BCACHE_HINT_FILE
 
     initramfs_hook bcache-helper -c $BCACHE_RULE_FILE -c $BCACHE_HELPER_FILE -c $BCACHE_HINT_FILE -x $(which bcache-super-show)
   fi
 
   # Copy test script
-  TARGET_TEST_SCRIPT=/usr/local/sbin/${SCRIPT_NAME}-test.sh
+  local TARGET_TEST_SCRIPT=/usr/local/sbin/${SCRIPT_NAME}-test.sh
   mkdir -p ${TARGET}$(dirname $TARGET_TEST_SCRIPT)
   cp -f "$TEST_SCRIPT" ${TARGET}$TARGET_TEST_SCRIPT
   chmod 755 ${TARGET}$TARGET_TEST_SCRIPT
@@ -1119,7 +1406,7 @@ cleanup() {
   # Unmount everything from $TARGET if it is a directory
   if [ -d "$TARGET" ]; then
     for MP in $(cat /proc/mounts | grep "$TARGET"'[ /]' | cut -d ' ' -f 2 | sort -r); do
-      echo "Unmounting $MP"
+      info "Unmounting $MP"
       umount -l $MP
       sleep 0.5
     done
@@ -1141,9 +1428,9 @@ _unlock_devs() {
     dev_dirs /dev/$D
     BC_DIR=$BCACHE_DIR
 
-    # Unlock any holders first
+    # Unlock any holders; these include cache sets for backing devices
     [ "$(/bin/ls -A $HOLDERS_DIR)" ] && _unlock_devs $(basename -a $HOLDERS_DIR/*)
-    
+
     # Get device path
     case $D in
       dm-[1-9]*)
@@ -1153,29 +1440,37 @@ _unlock_devs() {
         DEV=/dev/$D
         ;;
     esac
+    
+    # If the device is a cache device then detach all backing devices
+    # and close this device
+    if [ -f $BC_DIR/set/unregister ]; then
+      info "Unregistering cache $DEV"
+      echo 1 > $BC_DIR/set/unregister
+    fi
 
-    # Turn off swapping
+    # Turn off swapping if the device is swap space
     swapoff $DEV 2>/dev/null || true
 
     # Unlock device
     case $D in
       md[1-9]*)
-        echo -n "Stopping RAID $DEV .."
+        echo -n "--- Stopping RAID $DEV .."
         sleep 0.5
         while true; do
           echo -n '.'
-          # Sync will restart automatically soon
-          echo idle >/sys/block/$D/md/sync_action 2>/dev/null
           # Will fail as long as the array is still being sync'ed
-          mdadm --stop $DEV 1>&2 2>/dev/null && break
-          sleep 3          
+          mdadm --wait-clean $DEV && mdadm --stop $DEV 1>&2 2>/dev/null && break
+          sleep 1
+          # Can stop syncing only for a short time, will restart automatically soon
+          echo idle >/sys/block/$D/md/sync_action 2>/dev/null
         done
         sleep 0.5
         echo ''
         ;;
 
       bcache[0-9]*)
-        echo "Detaching cache $DEV"
+        BACKING_DEV=/dev/
+        info "Stopping cache $DEV"
         sleep 0.5
         echo 1 >$BC_DIR/detach
         echo 1 >$BC_DIR/stop
@@ -1183,7 +1478,7 @@ _unlock_devs() {
         ;;
 
       dm-[0-9]*)
-        echo "Closing mapped LUKS device $DEV"
+        info "Closing mapped LUKS device $DEV"
         sleep 0.5
         cryptsetup luksClose $DEV
         sleep 0.5
@@ -1191,14 +1486,14 @@ _unlock_devs() {
 
       sd*)
         if [ -e $BC_DIR/set/stop ]; then
-          echo "Stopping caching device $DEV"
+          info "Stopping cache device $DEV"
           sleep 0.5
           echo 1 >$BC_DIR/set/stop
           sleep 0.5
         fi
         ;;
       *)
-        echo "Do not know how to stop $D"
+        echo "*** Do not know how to stop $D ***" 1>&2
         ;;
     esac
   done
@@ -1255,7 +1550,7 @@ case "$OPTIONS" in
     INSTALL_GOAL=1
     FRIENDLY_GOAL="build and install $DISTRIB_DESCRIPTION to"
     ;;
-  'c b')
+  'b c')
     BUILD_GOAL=1
     CLONE_GOAL=1
     FRIENDLY_GOAL="build and clone to"
@@ -1297,17 +1592,17 @@ verify_sudo
 set -e
 
 # Configuration variables
-declare -a STORAGE_DEVS
-declare -a STORAGE_DEVS_UUIDS=()
-declare -a FS_DEVS_UUIDS=()
-declare -a RAID_LEVELS
-declare -a CACHED_BY
-declare -a CACHED_BY_UUIDS=()
-declare -a ENCRYPTED
-declare -a FS_TYPES
-declare -a MOUNT_POINTS
-declare -a MOUNT_OPTIONS
-declare -A ERASE_BLOCK_SIZES=()
+declare -a STORAGE_DEVS=()
+declare -a STORAGE_PART_UUIDS=()
+declare -a RAID_LEVELS=()
+declare -a CACHED_BY=()
+declare -a CACHE_PART_UUIDS=()
+declare -a CACHE_RAID_LEVELS=()
+declare -a BUCKET_SIZES=()
+declare -a ENCRYPTED=()
+declare -a FS_TYPES=()
+declare -a MOUNT_POINTS=()
+declare -a MOUNT_OPTIONS=()
 
 TARGET=
 AUTH_METHOD=
@@ -1332,15 +1627,8 @@ while true; do
     # Read previous configuration
     . "$CONFIG_FILE"
 
-    # Identify storage and caching devices by their UUIDs
-    for (( I=0; I<${#STORAGE_DEVS_UUIDS[@]}; I++ )); do
-      # RAID UUIDs will be expanded to a list of RAID components
-      STORAGE_DEVS[$I]=$(uuid_to_devs ${STORAGE_DEVS_UUIDS[$I]})
-    done
-
-    for (( I=0; I<${#CACHED_BY_UUIDS[@]}; I++ )); do
-      CACHED_BY[$I]=$(uuid_to_devs ${CACHED_BY_UUIDS[$I]})
-    done
+    # Translate identifiers to device names
+    load_parts
 
   else
     if [ -z "$BATCH_MODE" ]; then
@@ -1351,7 +1639,7 @@ Block devices
 =============
   
 EOF
-      lsblk -o NAME,FSTYPE,SIZE,LABEL,MOUNTPOINT /dev/sd?
+      lsblk -o NAME,FSTYPE,SIZE,LABEL,MOUNTPOINT /dev/sd? || true
       echo ''
     fi
     
@@ -1365,36 +1653,57 @@ EOF
       [ ! "$DEVS" ] && break
 
       STORAGE_DEVS[$NUM_FS]="$DEVS"
+      STORAGE_PART_UUIDS[$NUM_FS]=
       HINT=', empty to continue'
       VOL_HINT='additional '
 
-      # Request RAID level if more than one device specified
-      DEVS=($DEVS)
-      NUM_DEVS=${#DEVS[@]}
-      if [ $NUM_DEVS -gt 1 ]; then
-        [ $NUM_DEVS -gt 4 ] && NUM_DEVS=4
-        RAID_LEVELS[$NUM_FS]=$(read_text '  RAID level: ' "${RAID_LEVELS[$NUM_FS]}" "${AVAILABLE_RAID_LEVELS[$NUM_DEVS]}")
+      # Request RAID level if enough devices specified
+      RAID_LEVEL=$(raid_levels_for $DEVS)
+      if [ "$RAID_LEVEL" ]; then
+        RAID_LEVELS[$NUM_FS]=$(read_text '  RAID level: ' "${RAID_LEVELS[$NUM_FS]}" "$RAID_LEVEL")
       else
         RAID_LEVELS[$NUM_FS]=
       fi
 
-      # Optional SSD cache device and SSD erase block size
-      CACHE_DEV=$(read_devs '  SSD caching device (optional): ' "${CACHED_BY[$NUM_FS]}" '' optional)
-      CACHED_BY[$NUM_FS]=$CACHE_DEV
-      [ "$CACHE_DEV" ] && ERASE_BLOCK_SIZES[$CACHE_DEV]=$(read_text '    Erase block size: ' "${ERASE_BLOCK_SIZES[$CACHE_DEV]}" "$AVAILABLE_ERASE_BLOCK_SIZES")
+      # Optional SSD cache devices (must always be in the same order)
+      DEVS=$(read_devs '  Cache partition(s) (optional, two or more make a RAID): ' "${CACHED_BY[$NUM_FS]}" multiple optional)
+      CACHED_BY[$NUM_FS]=$(sorted_unique $DEVS)
+      CACHE_PART_UUIDS[$NUM_FS]=
+
+      if [ "$DEVS" ]; then
+        # Request cache RAID level if enough devices specified
+        RAID_LEVEL=$(raid_levels_for $DEVS)
+        if [ "$RAID_LEVEL" ]; then
+          CACHE_RAID_LEVELS[$NUM_FS]=$(read_text '  RAID level: ' "${CACHE_RAID_LEVELS[$NUM_FS]}" "$RAID_LEVEL")
+        else
+          CACHE_RAID_LEVELS[$NUM_FS]=
+        fi
+
+        # Cache bucket size (SSD erase block size unless it uses TLC)
+        while true; do
+          BUCKET_SIZES[$NUM_FS]=$(read_int "    Bucket size (64k...64M): " "${BUCKET_SIZES[$NUM_FS]}" 64k 64M)
+          VALUE=$(to_int ${BUCKET_SIZES[$NUM_FS]})
+          [ $VALUE -gt 0 -a $(( $VALUE & ($VALUE-1) )) -eq 0 ] && break
+          echo '*** Value must be a power of 2 ***' 1>&2
+        done
+
+      else
+        # No chache
+        CACHE_RAID_LEVELS[$NUM_FS]=
+      fi
 
       # Optional LUKS encryption
       [ "${ENCRYPTED[$NUM_FS]}" ] && DEFAULT=y || DEFAULT=n
       confirmed '  LUKS-encrypted' $DEFAULT && ENCRYPTED[$NUM_FS]=y || ENCRYPTED[$NUM_FS]=
 
       # File system type
-      FS_TYPE=$(read_text '  File system: ' "${FS_TYPES[$NUM_FS]}" "$AVAILABLE_FS_TYPES")
-      [ "$FS_TYPE" != "${FS_TYPES[$NUM_FS]}" ] && MOUNT_OPTIONS[$NUM_FS]=${DEFAULT_MOUNT_OPTIONS[$FS_TYPE]}
+      FS_TYPE=$(read_text '  File system: ' "${FS_TYPES[$NUM_FS]}" "$(sorted_unique ${!DEFAULT_MOUNT_OPTION_MAP[@]})")
+      [ "$FS_TYPE" != "${FS_TYPES[$NUM_FS]}" ] && MOUNT_OPTIONS[$NUM_FS]=${DEFAULT_MOUNT_OPTION_MAP[$FS_TYPE]}
       FS_TYPES[$NUM_FS]=$FS_TYPE
 
       # Mount points
       DEFAULT="${MOUNT_POINTS[$NUM_FS]}"
-      [ -z "$DEFAULT" -a $NUM_FS -eq 1 ] && DEFAULT=/
+      [ -z "$DEFAULT" -a $NUM_FS -eq 0 ] && DEFAULT=/
       case "${FS_TYPES[$NUM_FS]}" in
         btrfs)
           # Each mount point becomes a subvolume
@@ -1413,7 +1722,7 @@ EOF
       # Mount options
       if [ "$FS_TYPE" != swap ]; then
         DEFAULT=${MOUNT_OPTIONS[$NUM_FS]}
-        [ "$DEFAULT" ] || DEFAULT=${DEFAULT_MOUNT_OPTIONS[$FS_TYPE]}
+        [ "$DEFAULT" ] || DEFAULT=${DEFAULT_MOUNT_OPTION_MAP[$FS_TYPE]}
         MOUNT_OPTIONS[$NUM_FS]=$(read_text '    Mount options (optional): ' "$DEFAULT" '.*')
       fi
     done
@@ -1421,10 +1730,11 @@ EOF
     # Remove unused configuration entries
     for (( I=${#STORAGE_DEVS[@]}-1; I>=$NUM_FS; I-- )); do
       unset STORAGE_DEVS[$I]
-      unset STORAGE_DEVS_UUIDS[$I]
+      unset STORAGE_PART_UUIDS[$I]
       unset RAID_LEVELS[$I]
       unset CACHED_BY[$I]
-      unset CACHED_BY_UUIDS[$I]
+      unset CACHE_PART_UUIDS[$I]
+      unset CACHE_RAID_LEVELS[$I]
       unset ENCRYPTED[$I]
       unset FS_TYPES[$I]
       unset MOUNT_POINTS[$I]
@@ -1438,7 +1748,7 @@ EOF
       KEY_FILE_SIZE=
 
     else
-      install_pkg gnupg keyutils
+      require_pkg gnupg keyutils
 
       PREV_AUTH_METHOD=$AUTH_METHOD
       AUTH_METHOD=$(read_text $'LUKS authorization method\n  1=passphrase\n  2=key file (may be on a LUKS partition)\n  3=encrypted key file: ' "$AUTH_METHOD" '1 2 3')
@@ -1477,7 +1787,7 @@ EOF
             else
               # Building the target file system, and key file does not exist -- create it
               confirmed "  $KEY_FILE does not exist, create it" || continue
-              KEY_FILE_SIZE=$(read_int '    size (bytes): ' "$KEY_FILE_SIZE" 256 8192)
+              KEY_FILE_SIZE=$(to_int $(read_int '    size (256...8192 bytes): ' "$KEY_FILE_SIZE" 256 8k))
               gpg --gen-random 1 $KEY_FILE_SIZE > "$KEY_FILE"
               chmod 600 "$KEY_FILE"
               echo "  Key file $KEY_FILE created"
@@ -1511,7 +1821,7 @@ EOF
             else
               # Building the target file system, and key file does not exist -- create it
               confirmed "  $KEY_FILE does not exist, create it" || continue
-              KEY_FILE_SIZE=$(read_int '  size (256...8192): ' "$KEY_FILE_SIZE" 256 8192)
+              KEY_FILE_SIZE=$(to_int $(read_int '  size (256...8192 bytes): ' "$KEY_FILE_SIZE" 256 8k))
 
               # Get passphrase
               PW_ID=$(read_passphrase 'Key file passphrase' verify)
@@ -1555,13 +1865,13 @@ EOF
       fi
     fi
 
-    # Source for cloning
+    # Source for cloning (hostname or IPv4 or IPv6 address)
     if [ "$CLONE_GOAL" ]; then
-      SRC_HOSTNAME=$(read_text 'Remote host to clone from (empty for a local directory): ' "$SRC_HOSTNAME" '([A-Za-z][A-Za-z0-9_.-]*)?')
+      SRC_HOSTNAME=$(read_text 'Remote host to clone from (empty for a local directory): ' "$SRC_HOSTNAME" '(([A-Za-z][A-Za-z0-9_.-]*)|([0-9\.:]+)?')
 
       if [ "$SRC_HOSTNAME" ]; then
         # Remote source (verified later)
-        SRC_PORT=$(read_int '  Remote SSH port: ' "$SRC_PORT" 1 65535)
+        SRC_PORT=$(to_int $(read_int '  Remote SSH port: ' "$SRC_PORT" 1 65535))
         SRC_USERNAME=$(read_text '  Remote username (required only if password authentication): ' "$SRC_USERNAME" '([A-Za-z][A-Za-z0-9_-]*)?')
         SRC_DIR=$(read_dirpaths '  Remote source directory: ' "$SRC_DIR")
 
@@ -1578,124 +1888,106 @@ EOF
 
   # Boot file system is the root file system or the file system having mount point /boot
   BOOT_DEV_INDEX=0
-  for (( I=1; I<$NUM_FS; I++ )); do
-    contains_word "${MOUNT_POINTS[$I]}" /boot && BOOT_DEV_INDEX=$I && break
+  for (( I=1; I<NUM_FS; I++ )); do
+    contains_word /boot ${MOUNT_POINTS[$I]} && BOOT_DEV_INDEX=$I && break
   done
 
   # Determine boot devices
   BOOT_DEVS="$(sorted_unique_disks ${STORAGE_DEVS[$BOOT_DEV_INDEX]})"
   
+  # Collect RAIDs that are used as cache devices
+  declare -A CACHE_RAID_LEVEL_MAP=()   # cache device(s) -> RAID level
+  declare -A BUCKET_SIZE_MAP=()        # cache device(s) -> bucket size
+
+  for I in ${!CACHE_RAID_LEVELS[@]}; do
+    if [ "${CACHED_BY[$I]}" ]; then
+      [ "${CACHE_RAID_LEVELS[$I]}" ] && CACHE_RAID_LEVEL_MAP[${CACHED_BY[$I]}]=${CACHE_RAID_LEVELS[$I]}
+      BUCKET_SIZE_MAP[${CACHED_BY[$I]}]=${BUCKET_SIZES[$I]}
+    fi
+  done
+
   SKIP_CONFIG_FILE=1
 
 
-  # -------------------------- Check configuration -------------------------
+  # ------------------------ Check the configuration -----------------------
 
   ERROR=
+  WARNINGS=
   echo ''
 
-  # Have all UUIDs been mapped to block devices? (cannot detect missing RAID components)
-  for (( I=0; I<$NUM_FS; I++ )); do
-    if [ -n "${STORAGE_DEVS_UUIDS[$I]}" -a -z "${STORAGE_DEVS[$I]}" ]; then
-      echo "*** No device found with this UUID: ${STORAGE_DEVS_UUIDS[$I]} ***" 1>&2
-      ERROR=1
-    fi
+  # Enough devices for each RAID level of storage and cache?
+  for (( I=0; I<NUM_FS; I++ )); do
+    RAID_LEVEL=$(raid_levels_for ${STORAGE_DEVS[$I]})
+    [ ! "${STORAGE_DEVS[$I]}" ] || ! contains_word ${RAID_LEVELS[$I]} '' $RAID_LEVEL \
+      && error "Too few storage devices for file system #$((I+1)) (${FS_TYPES[$I]} on ${MOUNT_POINTS[$I]})"
 
-    if [ -n "${CACHED_BY_UUIDS[$I]}" -a -z "${CACHED_BY[$I]}" ]; then
-      echo "*** No device found with this UUID: ${CACHED_BY_UUIDS[$I]} ***" 1>&2
-      ERROR=1
-    fi
-  done
+    RAID_LEVEL=$(raid_levels_for ${CACHED_BY[$I]})
+    ! contains_word ${CACHE_RAID_LEVELS[$I]} '' $RAID_LEVEL \
+      && error "Too few cache devices for file system #$((I+1)) (${FS_TYPES[$I]} on ${MOUNT_POINTS[$I]})"
+  done  
 
   # Do all block devices exist?
   for D in $(sorted_unique ${STORAGE_DEVS[@]} ${CACHED_BY[@]}); do
-    if [ ! -b $D ]; then
-      echo "*** Not a block device: $D ***" 1>&2
-      ERROR=1
-    fi
+    [ ! -b $D ] && error "Not a block device: $D"
   done
 
-  # Any devices assigned multiple times?
-  CACHE_DEVS=$(sorted_unique ${CACHED_BY[@]})
-  DUPLICATE_DEVS=$(sorted_duplicates ${STORAGE_DEVS[@]} $CACHE_DEVS)
-  if [ "$DUPLICATE_DEVS" ]; then
-    echo "*** Devices assigned multiple times: $DUPLICATE_DEVS ***" 1>&2
-    ERROR=1
-  fi
+  # Any device assigned multiple times?
+  CACHED_BY_DEVS=$(sorted_unique ${CACHED_BY[@]})
+  DUPLICATE_DEVS=$(sorted_duplicates ${STORAGE_DEVS[@]} $CACHED_BY_DEVS)
+  [ "$DUPLICATE_DEVS" ] && error "Partition(s) assigned multiple times: $DUPLICATE_DEVS"
+
+  # Any cache device assigned multiple times?
+  RAID_DUPLICATES=$(sorted_duplicates ${!CACHE_RAID_LEVEL_MAP[@]})
+  [ "$RAID_DUPLICATES" ] && error "Cache partition(s) assigned multiple times: $RAID_DUPLICATES"
 
   # Warn if any cache device is removable or rotational
-  for D in $CACHE_DEVS; do
-    if ! is_ssd $D; then
-      echo "*** Cache device $D is not an SSD -- are you sure? ***" 1>&2
-    fi
+  for D in $CACHED_BY_DEVS; do
+    ! is_ssd $D && warning "Cache partition $D is not on an SSD -- are you sure?"
   done
 
   # Root file system must not be a swap FS
-  if [ "${FS_TYPES[0]}" = 'swap' ]; then
-    echo "*** Root file system must not be a ${FS_TYPES[0]} file system ***" 1>&2
-    ERROR=1
-  fi
+  [ "${FS_TYPES[0]}" = 'swap' ] \
+    && error "Root file system must not be a ${FS_TYPES[0]} file system"
 
   # Swap file systems cannot be cached
-  for (( I=0; I<$NUM_FS; I++ )); do
-    if [ "${FS_TYPES[$I]}" = 'swap' -a -n "${CACHED_BY[$I]}" ]; then
-      echo "*** A ${FS_TYPES[$I]} file system cannot be cached: ${STORAGE_DEVS[$I]} ***" 1>&2
-      ERROR=1
-    fi
+  for (( I=0; I<NUM_FS; I++ )); do
+    [ "${FS_TYPES[$I]}" = 'swap' -a -n "${CACHED_BY[$I]}" ] \
+      && error "A ${FS_TYPES[$I]} file system cannot be cached: ${STORAGE_DEVS[$I]}"
   done
  
   # Warn if there are multiple swap file systems
-  if [[ $(sorted_duplicates ${FS_TYPES[@]}) == *swap* ]]; then
-    echo "*** Multiple swap file systems prevent hibernation. Consider a RAID 0 instead. ***" 1>&2
-  fi
+  [[ $(sorted_duplicates ${FS_TYPES[@]}) == *swap* ]] \
+    && warning "Hibernation may not work with multiple swap partitions. RAID0 could be an alternative."
 
   # Root mount point for root file system?
   MP=$(sorted_unique ${MOUNT_POINTS[0]})
-  if [ "${MP%% *}" != / ]; then
-    echo "*** Root file system not at mount point / ***" 1>&2
-    ERROR=1
-  fi
+  [ "${MP%% *}" != / ] && error "Root file system not at mount point /"
 
   # Do the mount points exist as directories?
   for D in $MP; do
-    if [ ! -d $D ]; then
-      echo "*** Mount point not found on host system: $D ***" 1>&2
-      ERROR=1
-    fi
+    [ ! -d $D ] && error "Mount point not found on host system: $D"
   done
 
   # Any duplicate mount points?
   MP_DUP=$(sorted_duplicates ${MOUNT_POINTS[@]})
-  if [ "$MP_DUP" ]; then
-    echo "*** Mount points assigned multiple times: $MP_DUP ***" 1>&2
-    ERROR=1
-  fi
+  [ "$MP_DUP" ] && error "Mount points assigned multiple times: $MP_DUP"
 
   # Is the key file readable?
-  if [ -n "$KEY_FILE" -a ! -r "$KEY_FILE" ]; then
-    echo "*** Not a readable file: $KEY_FILE ***" 1>&2
-    ERROR=1
-  fi
+  [ -n "$KEY_FILE" -a ! -r "$KEY_FILE" ] && error "Not a readable file: $KEY_FILE"
 
   if [ "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
     # Attempting to cache the boot file system?
-    if [ "${CACHED_BY[$BOOT_DEV_INDEX]}" ]; then
-      echo "*** The /boot file system must not be cached: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
-      ERROR=1
-    fi
+    [ "${CACHED_BY[$BOOT_DEV_INDEX]}" ] \
+      && error "The /boot file system must not be cached: ${STORAGE_DEVS[$BOOT_DEV_INDEX]}"
 
     # Encrypted boot partition must be using a passphrase (GRUB does not support key files)
-    if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a -n "$AUTH_METHOD" ] && [ $AUTH_METHOD -gt 1 ]; then
-      echo "*** The /boot file system must not be encrypted using a key file: ${STORAGE_DEVS[$BOOT_DEV_INDEX]} ***" 1>&2
-      ERROR=1
-    fi
+    [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a -n "$AUTH_METHOD" ] && [ $AUTH_METHOD -gt 1 ] \
+      && error "The /boot file system must not be encrypted using a key file: ${STORAGE_DEVS[$BOOT_DEV_INDEX]}"
   fi
 
   if [ "$INSTALL_GOAL" ]; then
     # Username (and password) specified?
-    if [ ! "$TARGET_USERNAME" ]; then
-      echo '*** Target username is missing ***' 1>&2
-      ERROR=1
-    fi
+    [ ! "$TARGET_USERNAME" ] && error '*** Target username is missing ***'
     
     # We will need the host's package repository
     REPO=$(grep -m 1 -o -E 'https?://.*(archive\.ubuntu\.com/ubuntu/|releases\.ubuntu\.com/)' /etc/apt/sources.list) \
@@ -1705,7 +1997,7 @@ EOF
   if [ "$CLONE_GOAL" ]; then
     # Cloning from a remote host?
     if [ "$SRC_HOSTNAME" ]; then
-      install_pkg openssh-client
+      require_pkg openssh-client
 
       # Options for SSH master connection
       # Everything would be *much* easier if CONFIG_FILE could not contain spaces...
@@ -1725,27 +2017,20 @@ EOF
       
       if [ $STATUS -gt 1 ]; then
         # Master connection not established
-        echo "*** Unable to connect to '$SRC_HOSTNAME' ***" 1>&2
-        ERROR=1
+        error "Unable to connect to '$SRC_HOSTNAME'"
 
       else
         # If the master connection was just established then close it on exit
         [ "$CLEANUP_SSH" ] && on_exit "Terminating SSH connection: $SSH_SOCKET" \
           "ssh -S '$SSH_SOCKET' -O exit $SRC_HOSTNAME 2>/dev/null"
 
-        if [ $STATUS -eq 1 ]; then
-          # Master connection established, directory not found
-          echo "*** Remote source directory '$SRC_DIR' not found ***" 1>&2
-          ERROR=1
-        fi
+        # Remote directory must exist
+        [ $STATUS -eq 1 ] && error "Remote source directory '$SRC_DIR' not found"
       fi
 
     else
       # Local directory must exist
-      if [ ! -d "$SRC_DIR" ]; then
-        echo "*** Source directory '$SRC_DIR' not found ***" 1>&2
-        ERROR=1
-      fi
+      [ ! -d "$SRC_DIR" ] && error "Source directory '$SRC_DIR' not found"
 
       STATUS=0
       SSH_SOCKET=
@@ -1755,8 +2040,7 @@ EOF
     # Verify that a physical device is mounted at SRC_DIR
     if [ $STATUS -eq 0 ] && ! $SRC_PREAMBLE "$SSH_SOCKET" $SRC_HOSTNAME \
       "findmnt -n -l -o TARGET,SOURCE -R $SRC_DIR | grep -q -E $SRC_DIR'[[:space:]]+/dev/'"; then
-      echo "*** No device mounted at source directory '$SRC_DIR' ***" 1>&2
-      ERROR=1
+      error "No device mounted at source directory '$SRC_DIR'"
     fi
   fi
 
@@ -1782,24 +2066,28 @@ EOF
     ALL_DEVS=$(sorted_unique ${STORAGE_DEVS[@]} ${CACHED_BY[@]})
     ALL_DISKS=$(sorted_unique_disks $ALL_DEVS)
 
-    lsblk -o NAME,FSTYPE,SIZE,LABEL $ALL_DISKS | grep -E "NAME${ALL_DISKS//\/dev\//|^}${ALL_DEVS//\/dev\//|}"
+    lsblk -o NAME,FSTYPE,SIZE,LABEL $ALL_DISKS | grep -E "NAME${ALL_DISKS//\/dev\//|^}${ALL_DEVS//\/dev\//|}" || true
     echo ''
 
     VOL_HINT="Root file system:       "
 
-    for (( I=0; I<$NUM_FS; I++ )); do
+    for (( I=0; I<NUM_FS; I++ )); do
       echo \
         "${VOL_HINT}${STORAGE_DEVS[$I]}"
       [ -n "$INSTALL_GOAL" -a "$I" = "$BOOT_DEV_INDEX" ] && echo \
         "  Boot device"
       [ "${RAID_LEVELS[$I]}" ] && echo \
         "  RAID level:           ${RAID_LEVELS[$I]}"
+
       if [ "${CACHED_BY[$I]}" ]; then
         echo \
-        "  SSD caching device:   ${CACHED_BY[$I]}"
+        "  Cache partitions:     ${CACHED_BY[$I]}"
+        [ "${CACHE_RAID_LEVEL_MAP[${CACHED_BY[$I]}]}" ] && echo \
+        "    Cache RAID level:   ${CACHE_RAID_LEVEL_MAP[${CACHED_BY[$I]}]}"
         echo \
-        "    Erase block size:   ${ERASE_BLOCK_SIZES[${CACHED_BY[$I]}]}"
+        "    Bucket size:        ${BUCKET_SIZE_MAP[${CACHED_BY[$I]}]}"
       fi
+
       [ "${ENCRYPTED[$I]}" ] && echo \
         "  LUKS-encrypted"
       echo \
@@ -1845,6 +2133,8 @@ EOF
         "  user:                 $SRC_USERNAME"
     fi
 
+    # Print warnings, if any
+    [ "$WARNINGS" ] && echo "$WARNINGS"
     echo ''
 
     if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
@@ -1855,18 +2145,21 @@ EOF
   fi
 
   # Save configuration
-  [ ! -f "$CONFIG_FILE" ] && echo "Creating configuration file '$CONFIG_FILE'"
+  [ ! -f "$CONFIG_FILE" ] && info "Creating configuration file '$CONFIG_FILE'"
   sudo --user=$SUDO_USER truncate -s 0 "$CONFIG_FILE"
   echo \
 "# StorageComposer configuration file, DO NOT EDIT
 # created by $(readlink -e $0), $(date --rfc-3339 seconds)" >> "$CONFIG_FILE"
 
-  for V in TARGET NUM_FS STORAGE_DEVS STORAGE_DEVS_UUIDS FS_DEVS_UUIDS RAID_LEVELS CACHED_BY CACHED_BY_UUIDS \
-      ERASE_BLOCK_SIZES ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
-      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH \
+  for V in TARGET NUM_FS \
+      STORAGE_DEVS RAID_LEVELS CACHED_BY CACHE_RAID_LEVELS BUCKET_SIZES \
+      ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
+      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX \
+      TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH \
       SRC_HOSTNAME SRC_PORT SRC_USERNAME SRC_DIR SRC_EXCLUDES; do
     echo "$(declare -p $V)" >> "$CONFIG_FILE"
   done
+  save_parts
 
   # For encryption, save the LUKS key to the keyring
   if [ "${BUILD_GOAL}${MOUNT_GOAL}" ]; then
@@ -1881,7 +2174,7 @@ EOF
       2)
         # Save key file content to keyring
         KEY_ID=$(cat "$KEY_FILE" | keyctl padd user "$KEY_DESC" @u)
-        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
+        on_exit '--- Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
 
       3)
@@ -1892,7 +2185,7 @@ EOF
           PW_ID=
         done
         
-        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
+        on_exit '--- Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
     esac
   fi
@@ -1901,9 +2194,9 @@ EOF
 done
 
 # Disable udev rules (bcache rule interferes with setup)
-echo "Disabling 'other' udev rules"
+info "Disabling 'other' udev rules"
 udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG=1
-on_exit "Re-enabling 'other' udev rules" 'udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG='
+on_exit "--- Re-enabling 'other' udev rules" 'udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG='
 
 # Before building/mounting: stop encryption, caches and RAIDs in reverse order
 DEVS_TO_UNLOCK=
@@ -1914,7 +2207,7 @@ done
 DEVS_TO_UNLOCK="$DEVS_TO_UNLOCK $(sorted_unique ${CACHED_BY[@]})"
 DEVS_TO_UNLOCK=${DEVS_TO_UNLOCK//\/dev\//}
 
-# Cean up on error
+# Clean up on error
 trap "cleanup $DEVS_TO_UNLOCK" ERR
 
 cleanup $DEVS_TO_UNLOCK
@@ -1926,73 +2219,34 @@ if [ "$UNMOUNT_GOAL" ]; then
 fi
 
 
-# ---------------------- Set up the file system ----------------------------
+# -------------------------- Create/assemble RAIDs -------------------------
 
-# RAID arrays
-declare -a FS_DEVS
 declare -a LABELS
+declare -a FS_DEVS
+declare -A CACHE_DEVS_MAP  # single device -> itself, device list -> RAID device
 
-for (( I=0; I<$NUM_FS; I++ )); do
+for (( I=0; I<NUM_FS; I++ )); do
   # Sort mount points by increasing directory depth so that the root mount point is first, if present
   MOUNT_POINTS[$I]=$(sorted_unique ${MOUNT_POINTS[$I]})
 
-  # Use the (first) mount point or the file system type as label
+  # Use the (first) mount point or the file system type as part of the RAID
+  # name, of the bcache and LUKS /dev/mapper path and of the volume label
   MP_RE='^[[:space:]]*/([^[:space:]]*)'
   [[ "${MOUNT_POINTS[$I]}" =~ $MP_RE ]] && LABEL="${BASH_REMATCH[1]}" || LABEL=${FS_TYPES[$I]}
   LABEL=${LABEL//\//-}
   [ "$LABEL" ] || LABEL=root
-  LABELS[$I]=$LABEL
 
+  # Make the label unique within this configuration
+  N=
+  while contains_word ${LABEL}${N} ${LABELS[@]}; do
+    N=$((N+1))
+  done
+  LABELS[$I]=${LABEL}${N}
+
+  # Create/assemble storage RAIDs
   if [ "${RAID_LEVELS[$I]}" ]; then
-    install_pkg -t mdadm smartmontools
-
-    MD_DEV=$(new_path /dev/md/${PREFIX}${LABEL})
+    prepare_raid "${STORAGE_DEVS[$I]}" ${RAID_LEVELS[$I]} ${LABEL}
     FS_DEVS[$I]=$MD_DEV
-
-    NUM_DEVS=(${STORAGE_DEVS[$I]})
-    NUM_DEVS=${#NUM_DEVS[@]}
-
-    if [ "$BUILD_GOAL" ]; then
-      echo "Creating RAID $MD_DEV on homehost $TARGET_HOSTNAME from components ${STORAGE_DEVS[$I]// /, }"
-
-      # Mixed SSD/HDD array?
-      SSD_DEVS=
-      HDD_DEVS=
-
-      for D in ${STORAGE_DEVS[$I]}; do
-        if [ $D = /dev/sde2 ]; then
-        #if is_ssd $D; then
-          SSD_DEVS="$SSD_DEVS $D"
-        else
-          HDD_DEVS="$HDD_DEVS $D"
-        fi
-      done
-
-      SSD_DEVS=${SSD_DEVS/ /}
-      HDD_DEVS=${HDD_DEVS/ /}
-
-      wipefs -a ${STORAGE_DEVS[$I]}
-      if [ ${RAID_LEVELS[$I]} -eq 1 -a -n "$SSD_DEVS" -a -n "$HDD_DEVS" ]; then
-        # Mixed SSD/HDD RAID1 array, prefer reading from SSD
-        echo "Will prefer reading from ${SSD_DEVS// /, }, writing-behind to ${HDD_DEVS// /, }"
-        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} \
-          --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS $SSD_DEVS \
-          --write-behind --bitmap=internal --write-mostly $HDD_DEVS
-
-      else
-        # SSD-only/HDD-only array
-        yes | mdadm --quiet --create $MD_DEV --level=${RAID_LEVELS[$I]} \
-          --homehost=$TARGET_HOSTNAME --raid-devices=$NUM_DEVS ${STORAGE_DEVS[$I]}
-      fi
-      echo ''
-
-    elif [ "$MOUNT_GOAL" ]; then
-      echo "Assembling RAID $MD_DEV from components ${STORAGE_DEVS[$I]}"
-      mdadm --quiet --assemble $MD_DEV ${STORAGE_DEVS[$I]}
-    fi
-
-    # Adjust drive/driver error timeouts on host
-    . "$HERE/${SCRIPT_NAME}.mdraid-helper" $MD_DEV
 
     # Prevent RAIDs from being mistaken as SSDs by btrfs
     [ ${FS_TYPES[$I]} = btrfs ] && MOUNT_OPTIONS[$I]="nossd,${MOUNT_OPTIONS[$I]}"
@@ -2000,27 +2254,44 @@ for (( I=0; I<$NUM_FS; I++ )); do
   else
     FS_DEVS[$I]=${STORAGE_DEVS[$I]}
   fi
+
+  # Cache required, and these cache devices not processed yet?
+  DEVS=${CACHED_BY[$I]}
+  if [ "$DEVS" ] && [ -z "${CACHE_DEVS_MAP[$DEVS]}" ]; then
+    LEVEL=${CACHE_RAID_LEVEL_MAP[$DEVS]}
+    if [ "$LEVEL" ]; then
+      # Cache device is a RAID
+      prepare_raid "$DEVS" $LEVEL cache-${LABEL}
+      CACHE_DEVS_MAP[$DEVS]=$MD_DEV
+    else
+      # Cache device is a partition
+      CACHE_DEVS_MAP[$DEVS]=$DEVS
+    fi
+  fi
 done
 
+
+# ----------------------- Cache and backing devices ------------------------
 
 # Cache devices
 declare -A CSET_UUIDS
 
-for D in $(sorted_unique ${CACHED_BY[@]}); do
-  install_pkg -t bcache-tools
+for DEVS in "${!CACHE_DEVS_MAP[@]}"; do
+  require_pkg -t bcache-tools
   modprobe bcache
 
+  D=${CACHE_DEVS_MAP[$DEVS]}
   if [ "$BUILD_GOAL" ]; then
-    echo "Creating cache device $D"
+    info "Formatting $D as cache device"
     wipefs -a $D
     sleep 1
     CSET_RE='Set UUID:[[:space:]]*([^[:space:]]+)'
-    [[ $(make-bcache -b ${ERASE_BLOCK_SIZES[$D]} -C $D) =~ $CSET_RE ]] || die "Unexepected output format of make-bcache"
+    [[ $(make-bcache -b ${BUCKET_SIZE_MAP[$DEVS]} -C $D) =~ $CSET_RE ]] || die "Unexepected output of make-bcache"
 
   elif [ "$MOUNT_GOAL" ]; then
-    echo "Registering cache device $D"
+    info "Registering $D as cache device"
     CSET_RE='cset.uuid[[:space:]]+([^[:space:]]+)'
-    [[ $(bcache-super-show $D) =~ $CSET_RE ]] || die "Unexepected output format of bcache-super-show"
+    [[ $(bcache-super-show $D) =~ $CSET_RE ]] || die "Unexepected output of bcache-super-show"
   fi
 
   echo $D > /sys/fs/bcache/register 2>/dev/null || true
@@ -2032,22 +2303,22 @@ done
 declare -A CSET_FOR
 declare -A BACKING_FOR
 
-for (( I=0; I<$NUM_FS; I++ )); do
-  CACHE_DEV=${CACHED_BY[$I]}
-  if [ "$CACHE_DEV" ]; then
-    CSET_UUID=${CSET_UUIDS[$CACHE_DEV]}
+for (( I=0; I<NUM_FS; I++ )); do
+  if [ "${CACHED_BY[$I]}" ]; then
+    C=${CACHE_DEVS_MAP[${CACHED_BY[$I]}]}
     D=${FS_DEVS[$I]}
+    CSET_UUID=${CSET_UUIDS[$C]}
 
     if [ "$BUILD_GOAL" ]; then
-      echo "Configuring $D as backing device"
+      info "Configuring $D as backing device"
       wipefs -a $D
       make-bcache -B $(readlink -e $D)
-
-      CSET_FOR[$D]=$CSET_UUID
-      BACKING_FOR[$CSET_UUID]="${BACKING_FOR[$CSET_UUID]} $D"
     fi
 
-    echo "Attaching $D to cache device $CACHE_DEV"
+    CSET_FOR[$D]=$CSET_UUID
+    BACKING_FOR[$CSET_UUID]="${BACKING_FOR[$CSET_UUID]} $D"
+
+    info "Attaching $D to cache device $C"
     dev_dirs $D
     echo $D > /sys/fs/bcache/register 2>/dev/null || true
     wait_file $BCACHE_DIR/attach
@@ -2065,27 +2336,29 @@ for D in ${!CSET_FOR[@]}; do
   C=${CSET_FOR[$D]}
   D=$(dev_to_uuid $D)
   D=cset_for_backing_uuid_${D//-/_}
-  BCACHE_HINTS="$BCACHE_HINTS\n$D=$C"
+  BCACHE_HINTS="$BCACHE_HINTS"$'\n'"$D=$C"
 done
 
 for C in ${!BACKING_FOR[@]}; do
   D=$(devs_to_disks_by_uuid ${BACKING_FOR[$C]})
   D=${D//\/dev\/disk\/by-uuid\//}
   C=backing_uuids_for_cset_${C//-/_}
-  BCACHE_HINTS="$BCACHE_HINTS\n$C='$D'"
+  BCACHE_HINTS="$BCACHE_HINTS"$'\n'"$C='$D'"
 done
 
 
+# ---------------------- Encryption and file systems -----------------------
+
 # LUKS encryption
-for (( I=0; I<$NUM_FS; I++ )); do
+for (( I=0; I<NUM_FS; I++ )); do
   if [ "${ENCRYPTED[$I]}" ]; then
-    install_pkg -t cryptsetup gnupg keyutils
+    require_pkg -t cryptsetup gnupg keyutils
 
     # Avoid name conflicts with existing LUKS devices
     MAPPED_DEV=$(new_path /dev/mapper/${PREFIX}luks-${LABELS[$I]})
     MAPPED=${MAPPED_DEV#/dev/mapper/}
     LUKS_DEV=${FS_DEVS[$I]}
-    echo "Mapping LUKS device $LUKS_DEV to $MAPPED_DEV"
+    info "Mapping LUKS device $LUKS_DEV to $MAPPED_DEV"
     [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ] && format_luks $LUKS_DEV $MAPPED
     keyctl pipe $KEY_ID | cryptsetup --key-file - luksOpen $LUKS_DEV $MAPPED
     FS_DEVS[$I]=$MAPPED_DEV
@@ -2094,19 +2367,19 @@ done
 
 # (Re-)Create file systems
 if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
-  for (( I=0; I<$NUM_FS; I++ )); do
+  for (( I=0; I<NUM_FS; I++ )); do
     FS_DEV=${FS_DEVS[$I]}
     FS_TYPE=${FS_TYPES[$I]}
     LABEL=${LABELS[$I]}
     MP=(${MOUNT_POINTS[$I]})
     MO=${MOUNT_OPTIONS[$I]}
 
-    echo "Formatting $FS_DEV (volume ${PREFIX}${LABEL}) as $FS_TYPE"
+    info "Formatting $FS_DEV (volume ${PREFIX}${LABEL}) as $FS_TYPE"
     wipefs -a $FS_DEV
     
     case $FS_TYPE in
       ext[234]|xfs)
-        [ $FS_TYPE = xfs ] && install_pkg -t xfsprogs
+        [ $FS_TYPE = xfs ] && require_pkg -t xfsprogs
         mkfs.$FS_TYPE -L ${PREFIX}${LABEL} $FS_DEV
         sleep 1
         [ $MP = / ] && PASS=1 || PASS=2
@@ -2114,12 +2387,12 @@ if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
         ;;
 
       btrfs)
-        install_pkg -t btrfs-tools
+        require_pkg -t btrfs-tools
         mkfs.btrfs -L ${PREFIX}${LABEL} -m dup $FS_DEV
 
-        echo "Creating subvolume(s) ${MP[@]/\//@} for $FS_DEV"
+        info "Creating subvolume(s) ${MP[@]/\//@} for $FS_DEV"
         TMP_MP=$(mktemp -d)
-        on_exit "Removing temporary mount point: $TMP_MP", "rmdir $TMP_MP"
+        on_exit "--- Removing temporary mount point: $TMP_MP", "rmdir $TMP_MP"
         mount $FS_DEV ${TMP_MP}/
 
         for M in ${MP[@]}; do
@@ -2148,22 +2421,22 @@ fi
 # Mount file systems, parent directories first
 for MP in $(sorted_unique ${MOUNT_POINTS[@]}); do
   # Search for file system with matching mount point
-  for (( I=0; I<$NUM_FS; I++ )); do
-    if contains_word "${MOUNT_POINTS[$I]}" "$MP"; then
+  for (( I=0; I<NUM_FS; I++ )); do
+    if contains_word $MP ${MOUNT_POINTS[$I]}; then
       FS_DEV=${FS_DEVS[$I]}
       FS_TYPE=${FS_TYPES[$I]}
       MO=${MOUNT_OPTIONS[$I]}
 
       case $FS_TYPE in
         ext[234]|xfs)
-          echo "Mounting $FS_DEV at $TARGET$MP"
+          info "Mounting $FS_DEV at $TARGET$MP"
           mkdir -p $TARGET$MP
           mount -o "$MO" $FS_DEV $TARGET$MP
           ;;
 
         btrfs)
           # Mount subvolume
-          echo "Mounting $FS_DEV subvolume ${MP/\//@} at $TARGET$MP"
+          info "Mounting $FS_DEV subvolume ${MP/\//@} at $TARGET$MP"
           mkdir -p $TARGET$MP
           mount -o subvol=${MP/\//@},$MO $FS_DEV $TARGET$MP
           ;;
@@ -2177,37 +2450,55 @@ for MP in $(sorted_unique ${MOUNT_POINTS[@]}); do
 done
 
 
-# Update UUIDs in configuration file
-declare -a STORAGE_DEVS_UUIDS
-declare -a FS_DEVS_UUIDS
-declare -a CACHED_BY_UUIDS
-
-for (( I=0; I<$NUM_FS; I++ )); do
-  # Use only the first device (if it is a RAID then all components have the same UUID)
-  VD=(${STORAGE_DEVS[$I]})
-  STORAGE_DEVS_UUIDS[$I]=$(dev_to_uuid $VD)
-  CACHED_BY_UUIDS[$I]=$(dev_to_uuid ${CACHED_BY[$I]})
+# Save UUIDs of devices having file a system for the test script
+declare -a FS_DEVS_UUIDS=()
+for I in ${!FS_DEVS[@]}; do
   FS_DEVS_UUIDS[$I]=$(dev_to_uuid ${FS_DEVS[$I]})
 done
-
-echo "$(declare -p STORAGE_DEVS_UUIDS)" >> "$CONFIG_FILE"
 echo "$(declare -p FS_DEVS_UUIDS)" >> "$CONFIG_FILE"
-echo "$(declare -p CACHED_BY_UUIDS)" >> "$CONFIG_FILE"
 
 # Create test script
 TEST_SCRIPT="${CONFIG_FILE}-test.sh"
-[ ! -f "$TEST_SCRIPT" ] && echo "Creating test script '$TEST_SCRIPT'"
+[ ! -f "$TEST_SCRIPT" ] && info "Creating test script '$TEST_SCRIPT'"
 sudo --user=$SUDO_USER truncate -s 0 "$TEST_SCRIPT"
 echo '#!/bin/bash' >> "$TEST_SCRIPT"
 cat "$CONFIG_FILE" >> "$TEST_SCRIPT"
 cat "$HERE/${SCRIPT_NAME}.fio" >> "$TEST_SCRIPT"
 chmod 755 "$TEST_SCRIPT"
 
+# Done if nothing to install or clone
 if [ ! "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
-  # Mount the target file system for chroot-ing
-  mount_devs
-  echo $'\n'"****** Target system mounted at $TARGET and ready to chroot ******"$'\n'
+  # Can we chroot?
+  if [ -f $TARGET/bin/bash ]; then
+    CHROOT_MSG='and ready to chroot '
+    mount_devs
+  else
+    CHROOT_MSG=
+  fi
+
+  echo $'\n****** Target system mounted at '"$TARGET $CHROOT_MSG"$'******\n'
   exit
+fi
+
+# Use the (largest) swap partition for hibernating
+RESUME_UUID=
+RESUME_FS_DEV=
+MAX_SWAP_SIZE=0
+
+for I in ${!FS_DEVS[@]}; do
+  if [ "${FS_TYPES[$I]}" = 'swap' ]; then
+    SWAP_SIZE=$(blockdev --getsize64 ${FS_DEVS[$I]})
+    if [ $SWAP_SIZE -gt $MAX_SWAP_SIZE ]; then
+      RESUME_FS_DEV=${FS_DEVS[$I]}
+      RESUME_UUID=${FS_DEVS_UUIDS[$I]}
+      MAX_SWAP_SIZE=$SWAP_SIZE
+    fi
+  fi
+done
+
+if [ "$RESUME_UUID" ]; then
+  info "Using $RESUME_FS_DEV for hibernation"
+  TARGET_PKGS="$TARGET_PKGS pm-utils"
 fi
 
 
@@ -2218,7 +2509,7 @@ if [ "$INSTALL_GOAL" ]; then
 
   # Install a basic Ubuntu, plus debconf-utils for debconf-get-selections
   # (needs 'universe' which might not be a package repository on the host)  
-  install_pkg debootstrap
+  require_pkg debootstrap
 
   debootstrap \
     --arch $(dpkg --print-architecture) \
@@ -2246,21 +2537,21 @@ EOF
   # Save certain host debconf settings
   mkdir -p ${TARGET}/tmp
   DEBCONF=/tmp/debconf-selections
-  on_exit "Removing temporary files: ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
+  on_exit "--- Removing temporary files: ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
   ${TARGET}/usr/bin/debconf-get-selections \
     | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
   cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
 
   # chroot into the target
   mount_devs
-  echo "Configuring target system: chrooting into $TARGET"
+  info "Configuring target system: chrooting into $TARGET"
 
   if ! chroot $TARGET /bin/bash -l <<- EOF
-		set -e
+    set -e
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
     # Upgrade to the latest kernel version
-    echo 'Upgrading to the latest kernel version'
+    echo '--- Upgrading to the latest kernel version'
     apt-get -y -q update
     apt-get -y -q upgrade
     apt-get -y -q --reinstall --no-install-recommends install linux-image-generic linux-headers-generic linux-tools-generic
@@ -2271,7 +2562,7 @@ EOF
     sed -e 's/localhost/localhost $TARGET_HOSTNAME/' -i /etc/hosts
 
     # Install required packages
-    echo 'Installing required packages'
+    echo '--- Installing required packages'
     locale-gen $LANG
     apt-get -y -q --no-install-recommends install \
       network-manager nano man-db plymouth-themes \
@@ -2292,7 +2583,7 @@ EOF
     done
 
     # Create user
-    echo "Creating user '$TARGET_USERNAME'"
+    echo "--- Creating user '$TARGET_USERNAME'"
     useradd --create-home --groups adm,dialout,cdrom,floppy,sudo,audio,dip,video,plugdev,games,netdev --shell /bin/bash $TARGET_USERNAME
     echo '$TARGET_USERNAME:$TARGET_PWHASH' | chpasswd -e
 EOF
@@ -2330,14 +2621,16 @@ if [ "$CLONE_GOAL" ]; then
 
   # Copy the source, preserving hard links, permissions, ACLs and extended attributes
   # Hard links that would cross file system boundaries on the target cannot be preserved
-  install_pkg rsync
+  require_pkg rsync
 
-echo "************* RSYNC_OPTS=$RSYNC_OPTS"
   rsync -e "ssh -S '$SSH_SOCKET'" $RSYNC_OPTS $SRC_OPT $TARGET
 
   # Deinstall and (re-)install packages in chroot
   SRC_DESC=$(awk -F '="|=|"' '$1 == "DISTRIB_DESCRIPTION" { print $2 }' $TARGET/etc/lsb-release 2> /dev/null) || SRC_DESC='Unidentified OS'
   breakpoint "'$SRC_DESC' was copied, about to configure target system"
+
+  # Write configuration files
+  write_config_files
 
   mount_devs
 
@@ -2345,75 +2638,79 @@ echo "************* RSYNC_OPTS=$RSYNC_OPTS"
     set -e
     export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
-		# Purge packages related to the storage configuration of the source
-		apt-get -y -q purge \
-		  {btrfs,nilfs,f2fs}-tools jfsutils reiserfsprogs xfsprogs ocfs2-* zfs-* \
-		  bcache-tools cachefilesd flashcache-* \
-		  mdadm lvm2 cryptsetup grub-pc os-prober
+    # Purge packages related to the storage configuration of the source
+    apt-get -y -q purge \
+      {btrfs,nilfs,f2fs}-tools jfsutils reiserfsprogs xfsprogs ocfs2-* zfs-* \
+      bcache-tools cachefilesd flashcache-* \
+      mdadm lvm2 cryptsetup grub-pc os-prober
 
-		# (Re-)Install only the required packages
-		apt-get -y -q --reinstall --no-install-recommends install \
-		  $(sorted_unique $TARGET_PKGS) fio grub-pc os-prober
+    # (Re-)Install only the required packages
+    apt-get -y -q --reinstall --no-install-recommends install \
+      $(sorted_unique $TARGET_PKGS) fio grub-pc os-prober
 EOF
 
   then
     die 'Target system configuration failed'
   fi
-
-  # Write configuration files
-  write_config_files
 fi
 
 
 # ------------------------- Configure boot loader ------------------------
 
 if ! chroot $TARGET /bin/bash -l <<- EOF
-	set -e
+  set -e
 
-	# Provide a localized keyboard after booting as early as possible
-	# The GRUB keyboard layout is *not* localized because of questionable benefit, see these links for instructions:
-	# http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#answer-751260
-	# https://wiki.archlinux.org/index.php/Talk:GRUB#Custom_keyboard_layout
-	LC=${LANG%%_*}
-	cat >> /etc/default/grub <<-XEOF
+  # Provide a localized keyboard after booting as early as possible
+  # The GRUB keyboard layout is *not* localized because of questionable benefit, see these links for instructions:
+  # http://askubuntu.com/questions/751259/how-to-change-grub-command-line-grub-shell-keyboard-layout#answer-751260
+  # https://wiki.archlinux.org/index.php/Talk:GRUB#Custom_keyboard_layout
+  LC=${LANG%%_*}
+  cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX locale=\${LANG%%.*} bootkbd=\$LC console-setup/layoutcode=\$LC"
 GRUB_GFXMODE=1024x768
 XEOF
 
-	# Handle an encrypted boot partition
-	if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
-	  # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
-	  echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
-	fi
+  # Handle an encrypted boot partition
+  if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
+    # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
+    echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+  fi
 
-	# Honor debug options
-	case "$DEBUG_MODE" in
-	  1)
-	    # -d: disable os-prober and splash screen
-	    cat >> /etc/default/grub <<-XEOF
+  # Honor debug options
+  case "$DEBUG_MODE" in
+    1)
+      # -d: disable os-prober and splash screen
+      cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX_DEFAULT=
 GRUB_DISABLE_OS_PROBER=true
 XEOF
-	    ;;
-	  2)
-	    # -dd: disable os-prober and splash screen, drop into initramfs
-	    cat >> /etc/default/grub <<-XEOF
+      ;;
+    2)
+      # -dd: disable os-prober and splash screen, drop into initramfs
+      cat >> /etc/default/grub <<-XEOF
 # To drop into initramfs: break=top|modules|premount|mount|mountroot|bottom|init
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX break=mount"
 GRUB_CMDLINE_LINUX_DEFAULT=
 GRUB_DISABLE_OS_PROBER=true
 XEOF
-	    ;;
-	esac
+      ;;
+  esac
 
-	update-initramfs -c -k all
-	update-grub
+  # Prepare for resuming after hibernation if there is a swap partition
+  if [ "$RESUME_UUID" ]; then
+    cat >> /etc/default/grub <<-XEOF
+GRUB_CMDLINE_LINUX_DEFAULT="\\\$GRUB_CMDLINE_LINUX_DEFAULT resume=UUID=$RESUME_UUID"
+XEOF
+  fi
 
-	# Install the boot loader on all devices that comprise /boot
-	for B in $BOOT_DEVS; do
-	  echo 'Installing boot loader on '\$B
-	  grub-install \$B
-	done
+  update-initramfs -c -k all
+  update-grub
+
+  # Install the boot loader on all devices that comprise /boot
+  for B in $BOOT_DEVS; do
+    echo '--- Installing boot loader on '\$B
+    grub-install \$B
+  done
 EOF
 
 then
