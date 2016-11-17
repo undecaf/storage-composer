@@ -1972,8 +1972,10 @@ EOF
   MP_DUP=$(sorted_duplicates ${MOUNT_POINTS[@]})
   [ "$MP_DUP" ] && error "Mount points assigned multiple times: $MP_DUP"
 
-  # Is the key file readable?
-  [ -n "$KEY_FILE" -a ! -r "$KEY_FILE" ] && error "Not a readable file: $KEY_FILE"
+  # Key file must be readable unless we are unmounting
+  if [ -z "$UNMOUNT_GOAL" ]; then
+    [ -n "$KEY_FILE" -a ! -r "$KEY_FILE" ] && error "Not a readable file: $KEY_FILE"
+  fi
 
   if [ "${INSTALL_GOAL}${CLONE_GOAL}" ]; then
     # Attempting to cache the boot file system?
