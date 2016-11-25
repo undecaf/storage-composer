@@ -5,8 +5,8 @@
   (single partition) to complex (multiple drives/partitions, various file 
   systems, encryption, RAID and SSD caching in almost any combination).
   Even the SSD cache can be a RAID.
-- __Installs__ a (basic) Ubuntu onto the storage stack it has created. With a
-  little manual work, you get a full desktop or server Ubuntu.
+- __Installs__ a (basic) Ubuntu onto the storage stack it has created. With only a
+  little manual work you get a full desktop or server installation.
 - __Clones__ or __migrates__ an existing Ubuntu system and makes it bootable on
   a different storage stack.
 
@@ -161,8 +161,9 @@ afterwards. For each file system, the following prompts appear in this order:
   <dd><p>Partition(s) entered here become a cache device for this file system. If more than
   one partition was entered then you are prompted for the cache RAID level, and an
   <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a>
-  will be built and used as cache device.</p>
-  <p>The same combination of partitions can act as a cache for other file systems,
+  will be built and used as cache device. If your hard disks are in a RAID then
+  the cache should be, too.</p>
+  <p>The same partition/combination of partitions can act as a cache for other file systems,
   too. Swap space must not be cached.</p></dd>
   
   <dt><code>Bucket size (64k...64M):</code></dt>
@@ -955,6 +956,7 @@ as cache.
 - [Is hibernation supported?](#is-hibernation-supported)
 - [What does “SSD erase block size” mean and why should I care?](#what-does-ssd-erase-block-size-mean-and-why-should-i-care)
 - [Can I create a “fully encrypted” target system?](#can-i-create-a-fully-encrypted-target-system)
+- [Where is the key file expected to be located at boot time?](#where-is-the-key-file-expected-to-be-located-at-boot-time)
 - [Do I have to retype my passphrase for each encrypted file system during booting?](#do-i-have-to-retype-my-passphrase-for-each-encrypted-file-system-during-booting)
 - [How to avoid retyping my passphrase if `/boot` is encrypted?](#how-to-avoid-retyping-my-passphrase-if-boot-is-encrypted)
 - [How to achieve two-factor authentication for encrypted file systems?](#how-to-achieve-two-factor-authentication-for-encrypted-file-systems)
@@ -990,15 +992,15 @@ similar but not identical to what the Ubuntu installer produces. Most notably,
 you will have to install localization packages such as `language-pack-*` by hand.
 
 #### Which file systems can be created?
-Currently [ext2, ext3, ext4](https://ext4.wiki.kernel.org/index.php/Main_Page),
-[btrfs](https://btrfs.wiki.kernel.org/index.php/Main_Page), 
-[xfs](http://xfs.org/index.php/Main_Page) and swap space.
+Currently [`ext2`, `ext3`, `ext4`](https://ext4.wiki.kernel.org/index.php/Main_Page),
+[`btrfs`](https://btrfs.wiki.kernel.org/index.php/Main_Page), 
+[`xfs`](http://xfs.org/index.php/Main_Page) and swap space.
 
 #### How to debug booting after installing or cloning?
 - Adding option `-d` to an install or clone run removes the boot splash screen
   and displays boot messages.
 - Option `-dd` displays not only boot messages but also drops you into the
-  initramfs shell before any file system is mounted.
+  `initramfs` shell before any file system is mounted.
 - Use `dmesg` to review the boot messages later. To see only
   StorageComposer-related messages, use `dmesg | grep -E 'keyscript|bcache|mdraid'`.
 
@@ -1028,17 +1030,38 @@ could be used to detect whether MBR or boot partition have been tampered with,
 but unfortunately only _after_ the malware had an opportunity to run. Please note
 that such systems are frequently called “fully encrypted” although they are not.
 
+#### Where is the key file expected to be located at boot time?
+Short but incomplete answer: at the same path on the same device as when the
+file system was built.
+
+Extensive answer: by “key file path” we mean the path of the key file at build time,
+relative to the mount point of the key device. If, for instance, your key file
+was `/media/user/my_key_dev/path/to/keyfile` when the storage was
+built then your key device was mounted at `/media/user/my_key_dev` and the
+“key file path” is `/path/to/keyfile`.
+
+At boot time, the following locations are scanned for a file at the “key file path”,
+in this order:
+  1. The `initramfs`; if the key file was encrypted then you are prompted for
+     a passphrase. Note that StorageComposer cannot create such a setup, this 
+     has to be done manually.
+  1. All unencrypted partitions on all removable USB and MMC devices; again, a
+     passphrase is requested for an encrypted key file.
+  1. All LUKS-encrypted partitions on all removable USB and MMC devices; you are 
+     prompted for a passphrase for each such partition, and these partitions
+     can contain only unencrypted key files.
+
 #### Do I have to retype my passphrase for each encrypted file system during booting?
 If `/boot` is not on an encrypted file system then you need to enter
 your passphrase only once. The LUKS passphrase is derived
 from it according to the selected [LUKS authorization method](#authorization)
-and saved in the kernel keyring for all your encrypted file systems. The saved
+and is saved in the kernel keyring for all your encrypted file systems. The saved
 LUKS passphrase is discarded after 60&nbsp;seconds; by that time, all encrypted file
 systems should be open.
 
 On the other hand, if `/boot` is on an encrypted file system then your 
 passphrase is requested twice: first for `/boot` by GRUB2 and then for the
-actual file system(s) by the initramfs. This is true even if there is only a
+actual file system(s) by the `initramfs`. This is true even if there is only a
 (single) root filesystem. An additional inconvenience is that the keyboard
 is in US layout for the first passphrase and in localized layout for the second
 one. Although
@@ -1050,10 +1073,10 @@ file system; even then, the MBR remains unencrypted and is still vulnerable to
 [“evil maid” attacks](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
 
 #### How to avoid retyping my passphrase if `/boot` is encrypted?
-Make a separate file system for `/boot` (e.g. ext2) on a LUKS-encrypted 
+Make a separate file system for `/boot` (e.g. `ext2`) on a LUKS-encrypted 
 partition, using your passphrase.
 Encrypt the remaining file systems with a key file. Save the key file in the
-initramfs in `/boot`.  
+`initramfs` in `/boot`.  
 StorageComposer cannot do all of this, some manual work is required.
 
 #### How to achieve two-factor authentication for encrypted file systems?
@@ -1074,7 +1097,7 @@ Otherwise, the MBR goes to all target drives of the root file system.
 #### Which packages can be affected by cloning?
 File systems, caches etc. that are unsupported by StorageComposer can never be part
 of the target storage configuration. Therefore, the following packages are purged
-from the target in order to get rid of their effects on initramfs, `systemd`
+from the target in order to get rid of their effects on `initramfs`, `systemd`
 services, `udev` rules etc.:
 `f2fs-tools`, `nilfs-tools`, `jfsutils`, `reiserfsprogs`, `ocfs2-*`,
 `zfs-*`, `cachefilesd`, `flashcache-*`, `lvm2`.
@@ -1100,7 +1123,7 @@ will be installed permanently (unless already present):
 `bcache-tools`, `btrfs-tools`, `xfsprogs`, `fio`, `debconf-utils`,
 `openssh-client` and `debootstrap`.
 
-Some packages copy files to your initramfs, install `systemd` services, add
+Some packages copy files to your `initramfs`, install `systemd` services, add
 `udev` rules etc. Thus, additional block devices (notably RAID, LUKS and
 caching devices) may show up in your system. The `lsblk`command provides an
 overview.
