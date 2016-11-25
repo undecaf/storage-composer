@@ -1867,7 +1867,7 @@ EOF
 
     # Source for cloning (hostname or IPv4 or IPv6 address)
     if [ "$CLONE_GOAL" ]; then
-      SRC_HOSTNAME=$(read_text 'Remote host to clone from (empty for a local directory): ' "$SRC_HOSTNAME" '(([A-Za-z][A-Za-z0-9_.-]*)|([0-9\.:]+)?')
+      SRC_HOSTNAME=$(read_text 'Remote host to clone from (empty for a local directory): ' "$SRC_HOSTNAME" '([A-Za-z][A-Za-z0-9_.-]*)|([0-9\.:]+)?')
 
       if [ "$SRC_HOSTNAME" ]; then
         # Remote source (verified later)
