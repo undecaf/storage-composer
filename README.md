@@ -54,8 +54,10 @@ Download all `stcomp.*` files to the same directory and make sure that `stcomp.s
 is executable.
 
 ### Disk partitioning
-Storage disks and caching SSDs must be partitioned before running StorageComposer, e.g. using
-`fdisk`, `gdisk`, `parted`, `GParted`, `QtParted` or similar tools.
+Before running StorageComposer, create the partitions that you intend to use for
+storage, caching and swapping, e.g. using `fdisk`, `gdisk`, `parted`,
+`GParted`, `QtParted` or similar tools.
+
 Those partitions do not need to have any file system type assigned, nor
 do they have to be formatted&nbsp;&ndash; StorageComposer will take care of that. 
 
@@ -93,8 +95,9 @@ __`sudo stcomp.sh -m [-i|-c] [-y] [-d]`__
 <b><code>[[&lt;config&#x2011;file&gt;]](#configuring-the-target-system)</code></b>
 
 Mounts&nbsp;(`-m`) a previously built target system and prepares it for 
-`chroot`-ing. Optionally, `-i`&nbsp;[installs Ubuntu](#installing) 
-and&nbsp;`-c`&nbsp;[clones an existing system](#cloning).
+`chroot`-ing if it contains `/bin/bash`.
+Optionally, `-i`&nbsp;[installs Ubuntu](#installing) 
+and&nbsp;`-c`&nbsp;[clones an existing system](#cloning) before mounting.
 This will overwrite data on the target devices.
 
 `-y`&nbsp;mounts (but does not install or clone) without user interaction,
@@ -146,11 +149,10 @@ afterwards. For each file system, the following prompts appear in this order:
   <dt><code>RAID level:</code></dt>
   <dd><p>If several partitions were specified then an
   <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a> will be
-  built from these components
-  (using <a href="https://bcache.evilpiepirate.org/">bcache</a>).
+  built from these components.
   Enter the RAID level (<code>0</code>, <code>1</code>,
   <code>4</code>, <code>5</code>, <code>6</code> or <code>10</code>). The minimum
-  number of components for each level is 2, 2, 3, 3, 4 and 4, respectively.</p>
+  number of components per level is 2, 2, 3, 3, 4 and 4, respectively.</p>
   <p>A RAID1 consisting of both SSDs and HDDs will prefer reading from the SSDs.
   This performs similar to an SSD cache in
   <a href="https://wiki.ubuntu.com/ServerTeam/Bcache#A.2BIB0-writethrough.2BIB0_:">
@@ -158,10 +160,12 @@ afterwards. For each file system, the following prompts appear in this order:
   
   <dt><code>Cache partition(s) (optional, two or more make a RAID):</code> and<br>
   <code>Cache RAID level:</code></dt>
-  <dd><p>Partition(s) entered here become a cache device for this file system. If more than
+  <dd><p>Partition(s) entered here become a cache device
+  (using <a href="https://bcache.evilpiepirate.org/">bcache</a>)
+  for this file system. If more than
   one partition was entered then you are prompted for the cache RAID level, and an
   <a href="https://raid.wiki.kernel.org/index.php/Linux_Raid">MD/RAID</a>
-  will be built and used as cache device. If your hard disks are in a RAID then
+  will be built and used as cache device. If the file system is in a RAID then
   the cache should be, too.</p>
   <p>The same partition/combination of partitions can act as a cache for other file systems,
   too. Swap space must not be cached.</p></dd>
@@ -182,7 +186,7 @@ afterwards. For each file system, the following prompts appear in this order:
   <dt><code>LUKS-encrypted (y/n)?</code></dt>
   <dd><p>Will encrypt the partitions of this file system using
   <a href="https://en.wikipedia.org/wiki/Dm-crypt">dm-crypt</a>/<a href="https://en.wikipedia.org/wiki/Linux_Unified_Key_Setup">LUKS</a>.
-  The caching device will only see encrypted data.
+  The caching device will see only encrypted data.
   All encrypted file systems share the same LUKS passphrase (see section
   <a href="#authorization">Authorization</a>).</p>
   <p>If the target system is bootable and <code>/boot</code> is on an encrypted
@@ -191,7 +195,7 @@ afterwards. For each file system, the following prompts appear in this order:
   
   <dt><code>File system:</code></dt>
   <dd><p>Select one of <code>ext2</code>, <code>ext3</code>, <code>ext4</code>,
-  <code>btrfs</code> or <code>xfs</code>. For additional file systems, 
+  <code>btrfs</code> or <code>xfs</code>. After the root file system, 
   <code>swap</code> is also available and will be used for hibernation.</p></dd>
   
   <dt><code>Mount point:</code>, or<br>
@@ -245,8 +249,8 @@ content of a file, see below.
     MMC card) provides
     <a href="https://en.wikipedia.org/wiki/Multi-factor_authentication">two-factor authentication</a>.</p></dd>
 
-  <dt><code>Key file (preferably on a mounted removable device):</code>, or<br>
-  <code>Encrypted key file (preferably on a mounted removable device):</code></dt>
+  <dt><code>Key file (preferably on a removable device):</code>, or<br>
+  <code>Encrypted key file (preferably on a removable device):</code></dt>
   <dd><p>Enter the absolute path of the key file. If the file does not exist you will
   be asked whether to have one created.</p>
   <p><b>Caution:</b> always keep a copy of your key file offline in a
@@ -255,7 +259,7 @@ content of a file, see below.
   <dt><code>LUKS passphrase:</code>, or<br>
   <code>Key file passphrase:</code></dt>
   <dd><p>Appears whenever a passphrase is required for LUKS authorization 
-  methods&nbsp;1 and&nbsp;3. When building a target, each passphrase must
+  methods&nbsp;1 and&nbsp;3. When <i>building</i> a target, each passphrase must
   be repeated for verification.
   The most recent passphrase per <code>&lt;config&#x2011;file&gt;</code> and
   authorization method is remembered for five&nbsp;minutes. Within that time,
@@ -272,11 +276,11 @@ These options affect all file systems.
   (<code>root</code> for the root file system) serves as volume label,
   MD/RAID device name and <code>/dev/mapper</code> name.</p>
   <p>The prefix specified here is prepended to these labels and names in order to
-  avoid name conflicts with the host system.</p></dd>
+  avoid conflicts with names already existing in the host system.</p></dd>
 
   <dt><code>Target mount point:</code></dt>
   <dd><p>Absolute path to a host directory where to mount the target system.</p>
-  <p>In order to be able to <code>chroot</code>, these special host paths are
+  <p>For <code>chroot</code>ing, these special host paths are
   <a href="http://manpages.ubuntu.com/manpages/xenial/man8/mount.8.html">bind-mounted</a>
   automatically: <code>/dev</code>, <code>/dev/pts</code>, <code>/proc</code>, <code>/run/resolvconf</code>, <code>/run/lock</code>, <code>/sys</code>.</p></dd>
 </dl>
@@ -308,7 +312,8 @@ Other settings are inherited from the host system:
 #### Cloning
 When [cloning a directory](#building-installing-and-cloning) which contains an Ubuntu
 system, the source directory tree is copied to the target. Then the target system
-is reconfigured so that it can boot from its storage.
+is reconfigured so that it can boot from its storage. The source directory may be
+local or on a remote host.
 
 Please note these requirements:
 
@@ -319,8 +324,8 @@ Please note these requirements:
   `sysfs`, `tmpfs` etc. are not copied.
 - The source system should be an Ubuntu release supported by StorageComposer but
   it  _should not be running_. Otherwise, the target may end up
-  in an inconsistent state. Consequently, the source directory should be a 
-  subdirectory in a running system.
+  in an inconsistent state. Consequently, the source directory should not be the
+  root directory of the host system.
 - If the source directory is remote then
   <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html">rsync</a>
   and an <a href="https://help.ubuntu.com/community/SSH">SSH server</a>
@@ -350,9 +355,9 @@ Please note these requirements:
   <dt><code>Subpaths to exclude from copying (optional):</code></dt>
   <dd><p>A space-delimited list of files or directories that are not to be copied
   to the target. These are paths relative to the source directory but nevertheless
-  must starting with a <code>/</code>.</p>
+  must start with a <code>/</code>.</p>
   <p>The <a href="#global-settings">Target mount point</a> is never copied (for
-  those among us you who cannot resist cloning a live system after all).</p></dd>
+  those among us who cannot resist cloning a live system after all).</p></dd>
 </dl>
 
 Since the target storage configuration may differ from the source, please be
@@ -385,7 +390,7 @@ are part of the target:
 
 Testing is non-destructive on file systems and subvolumes but creates several
 files that can be huge. To delete them, run the test script with option&nbsp;`-c`.  
-Swap space is overwritten by testing. If necessary, it is disabled 
+Swap space is overwritten by testing. If necessary, swapping is disabled 
 automatically (`swapoff`) and re-enabled thereafter (`swapon`).
   
 #### Running tests
