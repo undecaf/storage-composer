@@ -213,7 +213,7 @@ on_exit() {
     echo "${CMDS[$I]}" >> $EXIT_SCRIPT
   done
 
-  echo "echo '$DESC'" >> $EXIT_SCRIPT
+  echo "echo '--- $DESC'" >> $EXIT_SCRIPT
 }
 
 
@@ -2176,7 +2176,7 @@ EOF
       2)
         # Save key file content to keyring
         KEY_ID=$(cat "$KEY_FILE" | keyctl padd user "$KEY_DESC" @u)
-        on_exit '--- Revoking LUKS key' "keyctl revoke $KEY_ID"
+        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
 
       3)
@@ -2187,7 +2187,7 @@ EOF
           PW_ID=
         done
         
-        on_exit '--- Revoking LUKS key' "keyctl revoke $KEY_ID"
+        on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
     esac
   fi
@@ -2198,7 +2198,7 @@ done
 # Disable udev rules (bcache rule interferes with setup)
 info "Disabling 'other' udev rules"
 udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG=1
-on_exit "--- Re-enabling 'other' udev rules" 'udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG='
+on_exit "Re-enabling 'other' udev rules" 'udevadm control --property=DM_UDEV_DISABLE_OTHER_RULES_FLAG='
 
 # Before building/mounting: stop encryption, caches and RAIDs in reverse order
 DEVS_TO_UNLOCK=
@@ -2394,7 +2394,7 @@ if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
 
         info "Creating subvolume(s) ${MP[@]/\//@} for $FS_DEV"
         TMP_MP=$(mktemp -d)
-        on_exit "--- Removing temporary mount point: $TMP_MP", "rmdir $TMP_MP"
+        on_exit "Removing temporary mount point: $TMP_MP", "rmdir $TMP_MP"
         mount $FS_DEV ${TMP_MP}/
 
         for M in ${MP[@]}; do
@@ -2539,7 +2539,7 @@ EOF
   # Save certain host debconf settings
   mkdir -p ${TARGET}/tmp
   DEBCONF=/tmp/debconf-selections
-  on_exit "--- Removing temporary files: ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
+  on_exit "Removing temporary files: ${TARGET}/tmp/"'*' "rm -rf ${TARGET}/tmp/"'*'
   ${TARGET}/usr/bin/debconf-get-selections \
     | grep -E '^(tzdata|keyboard-configuration|console-data|console-setup)[[:space:]]' >${TARGET}$DEBCONF
   cp -fpR /etc/{localtime,timezone} /etc/default /etc/console-setup ${TARGET}/tmp
