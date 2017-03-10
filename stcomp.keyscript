@@ -199,7 +199,7 @@ friendly_dev() {
   [ "$LABEL" ] && LABEL=", volume '${LABEL}'"
 
   # Determine size
-  local SIZE=$(blockdev --getsize64 $DEV)
+  local SIZE=$(blockdev --getsize64 $DEV 2>/dev/null)
   if [ "$SIZE" ]; then
     local UNITS=' KMGTP'
 
@@ -219,8 +219,7 @@ friendly_dev() {
 # --------------------------------------------------------------------------
 
 # LUKS-decrypts the specified block device/partition and save the mapped
-# name to DECRYPTED_DEV.
-# If successful, this function returns 0, otherwise 1.
+# name to DECRYPTED_DEV. Returns 0 if successful, otherwise 1.
 #
 # Arguments:
 #   $1             block device/partition (/dev/sd* etc.)
@@ -237,7 +236,7 @@ decrypt_dev() {
   local MAPPER_BASE
 
   # Check whether LUKS-encrypted
-  if /sbin/cryptsetup isLuks $1 1>&2; then
+  if /sbin/cryptsetup isLuks $1 >/dev/null 2>&1; then
     while [ $TRIES -gt 0 ]; do
       # Request passphrase
       PASS=$(read_pass "Looking for '$KEY_FILE': passphrase for $FRIENDLY_DEV, or empty to skip: ")
