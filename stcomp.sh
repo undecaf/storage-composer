@@ -1166,8 +1166,8 @@ format_luks() {
   keyctl pipe $KEY_ID | cryptsetup --batch-mode --hash sha512 --key-size 512 --key-file - luksFormat $1
 
   # Change LUKS authorization method from 1 to 0 for the first occurrence
-  # This forces passphrase entry in $KEY_SCRIPT and prevents saving a wrong
-  # password to the keyring
+  # This prompts for a passphrase in $KEY_SCRIPT and does not save an invalid
+  # passphrase to the keyring
   local ACTUAL_AUTH_METHOD=$AUTH_METHOD
   [ "$AUTH_METHOD" = 1 ] && ! contains_word "0:$MP_REL_KEY_FILE" "$CRYPTTAB" && ACTUAL_AUTH_METHOD=0
 
@@ -2349,7 +2349,7 @@ for C in ${!BACKING_FOR[@]}; do
 done
 
 
-# ---------------------- Encryption and file systems -----------------------
+# ------------------------------- Encryption -------------------------------
 
 # LUKS encryption
 for (( I=0; I<NUM_FS; I++ )); do
@@ -2367,7 +2367,9 @@ for (( I=0; I<NUM_FS; I++ )); do
   fi
 done
 
-# (Re-)Create file systems
+
+# ------------------------ (Re-)Create file systems ------------------------
+
 if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
   for (( I=0; I<NUM_FS; I++ )); do
     FS_DEV=${FS_DEVS[$I]}
@@ -2669,13 +2671,20 @@ if ! chroot $TARGET /bin/bash -l <<- EOF
   LC=${LANG%%_*}
   cat >> /etc/default/grub <<-XEOF
 GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX locale=\${LANG%%.*} bootkbd=\$LC console-setup/layoutcode=\$LC"
-GRUB_GFXMODE=1024x768
+GRUB_GFXMODE=1920x1080,1440x900,1280x720,1280x1024,1024x768,800x600,640x480
 XEOF
 
   # Handle an encrypted boot partition
   if [ -n "${ENCRYPTED[$BOOT_DEV_INDEX]}" -a "$AUTH_METHOD" = '1' ]; then
     # Note: GRUB_ENABLE_CRYPTODISK=1 is wrong
     echo 'GRUB_ENABLE_CRYPTODISK=y' >> /etc/default/grub
+  fi
+
+  # Do not let systemd handle encrypted partitions
+  if [ "$AUTH_METHOD" ]; then
+    cat >> /etc/default/grub <<-XEOF
+GRUB_CMDLINE_LINUX="\\\$GRUB_CMDLINE_LINUX luks=no"
+XEOF
   fi
 
   # Honor debug options
