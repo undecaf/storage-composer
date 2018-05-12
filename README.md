@@ -83,7 +83,7 @@ An internet connection is required; see here for details:
 If desired then StorageComposer can make your target bootable by:
 - [__installing__](#installing)&nbsp;(`-i`) a basic Ubuntu system
   from the Ubuntu repositories, or
-- [__cloning__](#cloning)&nbsp;(`-i`) an existing local or remote Ubuntu system:
+- [__cloning__](#cloning)&nbsp;(`-c`) an existing local or remote Ubuntu system:
   this copies the directory tree of the source system to the target. Then the target
   is reconfigured according to its storage configuration.
     
