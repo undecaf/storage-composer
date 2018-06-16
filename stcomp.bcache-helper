@@ -33,7 +33,7 @@
 #      and
 #          backing_uuids_for_cset_<cset-uuid>='<backing-uuid> ...'
 #
-# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+# Copyright 2016-2018 Ferdinand Kasper, fkasper@modus-operandi.at
 #
 # This file is part of "StorageComposer".
 #

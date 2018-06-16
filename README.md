@@ -46,8 +46,8 @@ malfunction badly and corrupt your data, therefore:
 
 ### What you need
 StorageComposer consists of a bash script and a few helper files. Currently it
-requires Ubuntu Xenial or one of its variants. If no such OS is installed on
-your PC or if you wish to set up a bare-metal system, boot from an Ubuntu Xenial
+requires Ubuntu Bionic or one of its variants. If no such OS is installed on
+your PC or if you wish to set up a bare-metal system, boot from an Ubuntu Bionic
 live DVD first.
 
 Download all `stcomp.*` files to the same directory and make sure that `stcomp.sh`
@@ -231,7 +231,7 @@ content of a file, see below.
 	  	      prompted for the LUKS partition passphrase. Before <i>building</i> or
 	  	      <i>mounting</i> such a target in the host system, you must open the
 	  	      LUKS-encrypted partition yourself, e.g. using
-	          <a href="http://manpages.ubuntu.com/manpages/xenial/man8/cryptsetup.8.html"><code>cryptsetup</code></a> or your file manager.</li>
+	          <a href="http://manpages.ubuntu.com/manpages/bionic/man8/cryptsetup.8.html"><code>cryptsetup</code></a> or your file manager.</li>
   	    </ul>
   	  </li>
   	  <li>an <b>encrypted key file</b> with the following properties:
@@ -281,8 +281,8 @@ These options affect all file systems.
   <dt><code>Target mount point:</code></dt>
   <dd><p>Absolute path to a host directory where to mount the target system.</p>
   <p>For <code>chroot</code>ing, these special host paths are
-  <a href="http://manpages.ubuntu.com/manpages/xenial/man8/mount.8.html">bind-mounted</a>
-  automatically: <code>/dev</code>, <code>/dev/pts</code>, <code>/proc</code>, <code>/run/resolvconf</code>, <code>/run/lock</code>, <code>/sys</code>.</p></dd>
+  <a href="http://manpages.ubuntu.com/manpages/bionic/man8/mount.8.html">bind-mounted</a>
+  automatically: <code>/dev</code>, <code>/dev/pts</code>, <code>/proc</code>, <code>/run</code>, <code>/sys</code>.</p></dd>
 </dl>
 
 #### Installing
@@ -302,7 +302,7 @@ These prompts appear only if you
 
 Other settings are inherited from the host system:
 - architecture (`x86` or `amd64`)
-- distribution version (`Xenial` etc.)
+- distribution version (`Bionic` etc.)
 - main Ubuntu package repository
 - locale
 - time zone
@@ -327,7 +327,7 @@ Please note these requirements:
   in an inconsistent state. Consequently, the source directory should not be the
   root directory of the host system.
 - If the source directory is remote then
-  <a href="http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html">rsync</a>
+  <a href="http://manpages.ubuntu.com/manpages/bionic/en/man1/rsync.1.html">rsync</a>
   and an <a href="https://help.ubuntu.com/community/SSH">SSH server</a>
   must be installed at the remote host.
 
@@ -412,7 +412,7 @@ The testing backend&nbsp;&ndash; the “Flexible I/O Tester” (fio)&nbsp;&ndash
 very powerful and produces detailed results. Please refer to section&nbsp;6
 (“Normal output”) of the [fio Howto](https://github.com/axboe/fio/blob/master/HOWTO)
 or to the
-[fio manpage](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html)
+[fio manpage](http://manpages.ubuntu.com/manpages/bionic/en/man1/fio.1.html)
 for an explanation of the output. 
 
 #### Customize testing
@@ -421,7 +421,7 @@ In order to add your own tests or modify existing ones, you need to be familiar
 with the fio job file format and parameters, see sections&nbsp;4 
 (“Job file format”) and&nbsp;5 (“Detailed list of parameters”) of the
 [fio Howto](https://github.com/axboe/fio/blob/master/HOWTO) or the
-[fio manpage](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html).
+[fio manpage](http://manpages.ubuntu.com/manpages/bionic/en/man1/fio.1.html).
 
 Custom tests can be added to a section marked as such close to the end of the
 test script. Please __make a copy of the modified script__ because the original
@@ -975,7 +975,7 @@ as cache.
 - [Pressing Ctrl-C at an input prompt leaves my Ubuntu terminal in a mess](#pressing-ctrl-c-at-an-input-prompt-leaves-my-ubuntu-terminal-in-a-mess)
 
 #### Which Ubuntu hosts are supported?
-Xenial or later is strongly recommended as the host system. Some packages may
+Bionic or later is strongly recommended as the host system. Some packages may
 behave differently or may not work properly at all in earlier versions. 
 
 #### What about Debian hosts and targets?
@@ -1193,7 +1193,7 @@ Credits go to the authors and contributors of these documents:
    XFS.org Wiki, 2016-06-06. Retrieved 2016-10-14.
 
 1. Tridgell, Andrew; Mackerras, Paul et al.:
-   [_rsync manpage_](http://manpages.ubuntu.com/manpages/xenial/en/man1/rsync.1.html).
+   [_rsync manpage_](http://manpages.ubuntu.com/manpages/bionic/en/man1/rsync.1.html).
    Ubuntu Manpage Repository, 2014-06-22. Retrieved 2016-10-23.
 
 1. [_SSH_](https://help.ubuntu.com/community/SSH).
@@ -1248,7 +1248,7 @@ Credits go to the authors and contributors of these documents:
    Wikipedia, 2016-05-16. Retrieved 2016-10-14.
    
 1. Saout, Jana; Frühwirth, Clemens; Broz, Milan; Wagner, Arno:
-   [_cryptsetup manpage_](http://manpages.ubuntu.com/manpages/xenial/man8/cryptsetup.8.html).
+   [_cryptsetup manpage_](http://manpages.ubuntu.com/manpages/bionic/man8/cryptsetup.8.html).
    Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-14.
    
 1. Ashley, Mike; Copeland, Matthew; Grahn, Joergen; Wheeler, David A.:
@@ -1259,7 +1259,7 @@ Credits go to the authors and contributors of these documents:
    Wikipedia, 2016-10-12. Retrieved 2016-10-14.
    
 1. Zak, Karel:
-   [_mount manpage_](http://manpages.ubuntu.com/manpages/xenial/man8/mount.8.html).
+   [_mount manpage_](http://manpages.ubuntu.com/manpages/bionic/man8/mount.8.html).
    Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-22.
    
 1. Axboe, Jens:
@@ -1267,7 +1267,7 @@ Credits go to the authors and contributors of these documents:
    GitHub, 2016-10-18. Retrieved 2016-10-14.
 
 1. Carroll, Aaron; Axboe, Jens:
-   [_fio manpage_](http://manpages.ubuntu.com/manpages/xenial/en/man1/fio.1.html).
+   [_fio manpage_](http://manpages.ubuntu.com/manpages/bionic/en/man1/fio.1.html).
    Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-23.
    
 1. Schneier, Bruce:
