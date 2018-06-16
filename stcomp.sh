@@ -9,7 +9,7 @@
 #
 # This script can also install a basic Ubuntu and make the storage bootable.
 #
-# Copyright 2016 Ferdinand Kasper, fkasper@modus-operandi.at
+# Copyright 2016-2018 Ferdinand Kasper, fkasper@modus-operandi.at
 #
 # This file is part of "StorageComposer".
 #
@@ -278,8 +278,11 @@ read_int() {
 
   local REPLY
   local INT_REPLY
-  [ ! "$3" ] || local MIN=$(to_int "$3") || die "Not an integer: $3"
-  [ ! "$4" ] || local MAX=$(to_int "$4") || die "Not an integer: $4"
+  local MIN
+  local MAX
+
+  [ ! "$3" ] || MIN=$(to_int "$3") || die "Not an integer: $3"
+  [ ! "$4" ] || MAX=$(to_int "$4") || die "Not an integer: $4"
 
   while true; do
     read -erp "$1" -i "$2"
@@ -334,7 +337,7 @@ read_passphrase() {
 
   # Repeat only if the passphrase expires while in this loop
   while true; do
-    ID=$(keyctl search @u user "$PW_DESC" 2>/dev/null)
+    ID=$(keyctl search @s user "$PW_DESC" 2>/dev/null)
 
     # In batch mode, use the cached passphrase if available
     if [ "$BATCH_MODE" ]; then
@@ -364,7 +367,7 @@ read_passphrase() {
       done
 
       # Save (verified) passphrase to keyring
-      ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @u 2>/dev/null)
+      ID=$(echo -n "$REPLY" | keyctl padd user "$PW_DESC" @s 2>/dev/null)
     fi
     
     # Repeat if passphrase expired while in this loop
@@ -929,8 +932,11 @@ is_ssd() {
 #   $1  file path
 #
 mount_point_relative() {
-  local DIR_NAME=$(readlink -e $(dirname $1)) || return
-  local MP=$(stat --printf '%m' $DIR_NAME) || return
+  local DIR_NAME
+  local MP
+
+  DIR_NAME=$(readlink -e $(dirname $1)) || return
+  MP=$(stat --printf '%m' $DIR_NAME) || return
   echo -n "${DIR_NAME#$MP}/$(basename $1)"
 }
 
@@ -1237,7 +1243,7 @@ EOF
 #
 mount_devs() {
   info "Mounting devices for chroot-ing into $TARGET"
-  for D in /dev /dev/pts /proc /run/resolvconf /run/lock /sys; do
+  for D in /dev /dev/pts /proc /run /sys; do
     mkdir -p ${TARGET}${D}
     mount --bind $D ${TARGET}${D}
   done
@@ -1267,7 +1273,7 @@ write_config_files() {
     mkdir -p ${TARGET}$(dirname $KEY_SCRIPT)
     cp -f "$HERE/${SCRIPT_NAME}.keyscript" ${TARGET}$KEY_SCRIPT
     chmod 700 ${TARGET}$KEY_SCRIPT
-    initramfs_hook crypt -c $KEY_SCRIPT -x $(which keyctl) -x $(which gpg) -c /usr/share/gnupg/options.skel
+    initramfs_hook crypt -c $KEY_SCRIPT -x $(which keyctl) -x $(which gpg)
 
     # Create /etc/crypttab using keyscript authentication
     mkdir -p $TARGET/etc
@@ -1349,7 +1355,7 @@ authentication).
 Optionally, a basic bootable $DISTRIB_DESCRIPTION can be installed,
 or an existing system.
 
-Usage: $SCRIPT [-b|-m] [-i|-c <source>] [-y] [-d] [<config-file>]
+Usage: $SCRIPT [-b|-m] [-i|-c] [-y] [-d] [<config-file>]
        $SCRIPT -u [-y] [<config-file>]
        $SCRIPT -h
 
@@ -1364,10 +1370,10 @@ Usage: $SCRIPT [-b|-m] [-i|-c <source>] [-y] [-d] [<config-file>]
         block devices will be overwritten.
     -i  Installs a basic bootable $DISTRIB_DESCRIPTION onto the
         target storage, with the same architecture as the host system.
-    -c  Clones an existing $DISTRIB_DESCRIPTION system from the
-        <source> mount point which may be local or on a remote host.
+    -c  Clones an existing $DISTRIB_DESCRIPTION system from a
+        mount point which may be local or on a remote host.
         Such a remote host must be an rsync server, and the remote
-        <source> must be in a form recognizable by rsync.
+        source must be given in a form recognizable by rsync.
         The source system should *not* be running and should also be
         an $DISTRIB_DESCRIPTION system.
     -m  (Re-)Mounts a previously built target storage at the mount
@@ -2107,6 +2113,8 @@ EOF
         "Authorization method:   ${AUTH_METHODS[$AUTH_METHOD]}"
       [ "$KEY_FILE" ] && echo \
         "Key file:               $KEY_FILE"
+      [ "$MP_REL_KEY_FILE" ] && echo \
+        "  Mount-point relative: $MP_REL_KEY_FILE"
     fi
 
     [ "$PREFIX" ] && echo \
@@ -2175,7 +2183,7 @@ EOF
 
       2)
         # Save key file content to keyring
-        KEY_ID=$(cat "$KEY_FILE" | keyctl padd user "$KEY_DESC" @u)
+        KEY_ID=$(cat "$KEY_FILE" | keyctl padd user "$KEY_DESC" @s)
         on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
 
@@ -2183,7 +2191,7 @@ EOF
         # Save decrypted key file content to keyring
         while true; do
           [ "$PW_ID" ] || PW_ID=$(read_passphrase 'Key file passphrase')
-          KEY_ID=$(cat "$KEY_FILE" | gpg --quiet --yes --passphrase "$(keyctl pipe $PW_ID)" --output - | keyctl padd user "$KEY_DESC" @u 2>/dev/null) && break
+          KEY_ID=$(cat "$KEY_FILE" | gpg --quiet --yes --passphrase "$(keyctl pipe $PW_ID)" --output - | keyctl padd user "$KEY_DESC" @s 2>/dev/null) && break
           PW_ID=
         done
         
@@ -2645,7 +2653,7 @@ if [ "$CLONE_GOAL" ]; then
     # Purge packages related to the storage configuration of the source
     apt-get -y -q purge \
       {btrfs,nilfs,f2fs}-tools jfsutils reiserfsprogs xfsprogs ocfs2-* zfs-* \
-      bcache-tools cachefilesd flashcache-* \
+      bcache-tools cachefilesd \
       mdadm lvm2 cryptsetup grub-pc os-prober
 
     # (Re-)Install only the required packages
