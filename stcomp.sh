@@ -1816,7 +1816,7 @@ EOF
               # Key file exists, get passphrase and verify that the file can be decrypted
               while true; do
                 PW_ID=$(read_passphrase 'Key file passphrase')
-                cat "$KEY_FILE" | gpg --quiet --yes --passphrase $(keyctl pipe $PW_ID) --output /dev/null && break 2
+                cat "$KEY_FILE" | gpg --quiet --no-permission-warning --yes --pinentry-mode loopback --passphrase $(keyctl pipe $PW_ID) --output /dev/null && break 2
               done
 
             elif [ -e "$KEY_FILE" -o -z "$BUILD_GOAL" ]; then
@@ -1833,7 +1833,8 @@ EOF
               PW_ID=$(read_passphrase 'Key file passphrase' verify)
 
               # Save encrypted random key in the key file
-              gpg --quiet --gen-random 1 $KEY_FILE_SIZE | gpg --quiet --yes --symmetric --cipher-algo AES256 --s2k-digest-algo SHA256 --passphrase $(keyctl pipe $PW_ID) --output "$KEY_FILE"
+              gpg --quiet --no-permission-warning --gen-random 1 $KEY_FILE_SIZE \
+                | gpg --quiet --no-permission-warning --yes --symmetric --cipher-algo AES256 --s2k-digest-algo SHA256 --pinentry-mode loopback --passphrase $(keyctl pipe $PW_ID) --output "$KEY_FILE"
               chmod 600 "$KEY_FILE"
               echo "  Encrypted key file $KEY_FILE created"
               break
@@ -2164,7 +2165,7 @@ EOF
   for V in TARGET NUM_FS \
       STORAGE_DEVS RAID_LEVELS CACHED_BY CACHE_RAID_LEVELS BUCKET_SIZES \
       ENCRYPTED FS_TYPES MOUNT_POINTS MOUNT_OPTIONS \
-      AUTH_METHOD KEY_FILE KEY_FILE_SIZE PREFIX \
+      AUTH_METHOD KEY_FILE KEY_FILE_SIZE MP_REL_KEY_FILE PREFIX \
       TARGET_HOSTNAME TARGET_USERNAME TARGET_PWHASH \
       SRC_HOSTNAME SRC_PORT SRC_USERNAME SRC_DIR SRC_EXCLUDES; do
     echo "$(declare -p $V)" >> "$CONFIG_FILE"
@@ -2191,10 +2192,13 @@ EOF
         # Save decrypted key file content to keyring
         while true; do
           [ "$PW_ID" ] || PW_ID=$(read_passphrase 'Key file passphrase')
-          KEY_ID=$(cat "$KEY_FILE" | gpg --quiet --yes --passphrase "$(keyctl pipe $PW_ID)" --output - | keyctl padd user "$KEY_DESC" @s 2>/dev/null) && break
+          KEY_ID=$(cat "$KEY_FILE" \
+            | gpg --quiet --no-permission-warning --yes --pinentry-mode loopback --passphrase "$(keyctl pipe $PW_ID)" --output - \
+            | keyctl padd user "$KEY_DESC" @s 2>/dev/null) \
+            && break
           PW_ID=
         done
-        
+
         on_exit 'Revoking LUKS key' "keyctl revoke $KEY_ID"
         ;;
     esac
