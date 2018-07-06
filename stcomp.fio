@@ -6,7 +6,7 @@
 # Whenever building a target, Storage Composer creates a runnable test
 # script for the target configuration.
 #
-# Copyright 2016, 2017 Ferdinand Kasper, fkasper@modus-operandi.at
+# Copyright 2016-2018 Ferdinand Kasper, fkasper@modus-operandi.at
 #
 # This file is part of "StorageComposer".
 #

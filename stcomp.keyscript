@@ -306,7 +306,7 @@ save_key_file() {
       fi
 
       # Save decrypted key file as LUKS key
-      cat $1$2 | gpg --quiet --yes --passphrase "$PASS" --output - | save_luks_key \
+      cat $1$2 | gpg --quiet --no-permission-warning --yes --pinentry-mode loopback --passphrase "$PASS" --output - | save_luks_key \
         && log "$1$2: decrypted and saved as LUKS key" \
         && return 0
 

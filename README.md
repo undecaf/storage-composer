@@ -130,8 +130,8 @@ For each option, entering `?` will indicate what is a valid input.
 
 #### File systems
 Each target system _must have_ a root file system and _can have_ additional file
-systems. If the target is bootable and is running then the root file system appears
-at `/`. If the target is mounted in the host then the root file system
+systems. If the target is bootable then the root file system appears
+at `/` when it is running. If the target is mounted in the host then the root file system
 appears at the [`Target mount point`](#global-settings).
 In either case, additional file systems are mounted relative to the root file system.
 
@@ -139,7 +139,7 @@ The root file system has to be configured first. More file systems can be added
 afterwards. For each file system, the following prompts appear in this order:
 
 <dl>
-  <dt><code>Partition(s) for root file system (two or more make a RAID):</code>, or<br>
+  <dt><code>Partition(s) for root file system (two or more make a RAID):</code> or<br>
   <code>Partition(s) for additional file system (two or more make a RAID, empty 
   to continue):</code></dt>
   <dd><p>Enter the partition(s) that make up this file system, separated by space.
@@ -198,7 +198,7 @@ afterwards. For each file system, the following prompts appear in this order:
   <code>btrfs</code> or <code>xfs</code>. After the root file system, 
   <code>swap</code> is also available and will be used for hibernation.</p></dd>
   
-  <dt><code>Mount point:</code>, or<br>
+  <dt><code>Mount point:</code> or<br>
   <code>Mount points (become top-level subvolumes with leading '@'):</code></dt>
   <dd><p>Enter one or several (only btrfs) mount points, separated by spaces.
   For each btrfs mount point, a corresponding subvolume will be created. 
@@ -249,14 +249,14 @@ content of a file, see below.
     MMC card) provides
     <a href="https://en.wikipedia.org/wiki/Multi-factor_authentication">two-factor authentication</a>.</p></dd>
 
-  <dt><code>Key file (preferably on a removable device):</code>, or<br>
+  <dt><code>Key file (preferably on a removable device):</code> or<br>
   <code>Encrypted key file (preferably on a removable device):</code></dt>
   <dd><p>Enter the absolute path of the key file. If the file does not exist you will
   be asked whether to have one created.</p>
   <p><b>Caution:</b> always keep a copy of your key file offline in a
   safe place.</p></dd>
 
-  <dt><code>LUKS passphrase:</code>, or<br>
+  <dt><code>LUKS passphrase:</code> or<br>
   <code>Key file passphrase:</code></dt>
   <dd><p>Appears whenever a passphrase is required for LUKS authorization 
   methods&nbsp;1 and&nbsp;3. When <i>building</i> a target, each passphrase must
@@ -348,7 +348,7 @@ Please note these requirements:
   <p>The authenticated user needs sufficient privileges to read everything within the
   remote source directory.</p></dd>
 
-  <dt><code>Remote source directory:</code>, or<br>
+  <dt><code>Remote source directory:</code> or<br>
   <code>Source directory:</code></dt>
   <dd><p>The directory where the storage of the source system is mounted.</p></dd>
   
