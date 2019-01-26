@@ -9,7 +9,7 @@
 #
 # This script can also install a basic Ubuntu and make the storage bootable.
 #
-# Copyright 2016-2018 Ferdinand Kasper, fkasper@modus-operandi.at
+# Copyright 2016-2019 Ferdinand Kasper, fkasper@modus-operandi.at
 #
 # This file is part of "StorageComposer".
 #
@@ -2387,16 +2387,17 @@ if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
     FS_DEV=${FS_DEVS[$I]}
     FS_TYPE=${FS_TYPES[$I]}
     LABEL=${LABELS[$I]}
+    FS_LABEL=$(printf '%.12s' ${PREFIX}${LABEL})
     MP=(${MOUNT_POINTS[$I]})
     MO=${MOUNT_OPTIONS[$I]}
 
-    info "Formatting $FS_DEV (volume ${PREFIX}${LABEL}) as $FS_TYPE"
+    info "Formatting $FS_DEV (volume ${FS_LABEL}) as $FS_TYPE"
     wipefs -a $FS_DEV
     
     case $FS_TYPE in
       ext[234]|xfs)
         [ $FS_TYPE = xfs ] && require_pkg -t xfsprogs
-        mkfs.$FS_TYPE -L ${PREFIX}${LABEL} $FS_DEV
+        mkfs.$FS_TYPE -L ${FS_LABEL} $FS_DEV
         sleep 1
         [ $MP = / ] && PASS=1 || PASS=2
         add_fstab $FS_DEV $MP $FS_TYPE "$MO" $PASS
@@ -2404,7 +2405,7 @@ if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
 
       btrfs)
         require_pkg -t btrfs-tools
-        mkfs.btrfs -L ${PREFIX}${LABEL} -m dup $FS_DEV
+        mkfs.btrfs -L ${FS_LABEL} -m dup $FS_DEV
 
         info "Creating subvolume(s) ${MP[@]/\//@} for $FS_DEV"
         TMP_MP=$(mktemp -d)
@@ -2422,7 +2423,7 @@ if [ "${BUILD_GOAL}${INSTALL_GOAL}${CLONE_GOAL}" ]; then
         ;;
 
       swap)
-        mkswap -L ${PREFIX}${LABEL} $FS_DEV
+        mkswap -L ${FS_LABEL} $FS_DEV
         sleep 1
         add_fstab $FS_DEV none swap sw 0
         ;;
