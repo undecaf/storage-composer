@@ -5,7 +5,7 @@
 # components of RAID arrays that come up. See the helper script
 # /usr/local/sbin/mdraid-helper for details.
 #
-# Copyright 2016-2018 Ferdinand Kasper, fkasper@modus-operandi.at
+# Copyright 2016-2019 Ferdinand Kasper, fkasper@modus-operandi.at
 #
 # This file is part of "StorageComposer".
 #
