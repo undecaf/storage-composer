@@ -1254,7 +1254,7 @@ mount_devs() {
 
   mkdir -p ${TARGET}/tmp
   mount -t tmpfs tmpfs ${TARGET}/tmp
-  
+
   sleep 3   # wait until everything has settled
 }
 
@@ -2654,6 +2654,7 @@ if [ "$CLONE_GOAL" ]; then
 
   if ! chroot $TARGET /bin/bash -l <<- EOF
     set -e
+    export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
 
     # (Re-)Install only the required packages
     apt-get -y -q --reinstall --no-install-recommends install \
