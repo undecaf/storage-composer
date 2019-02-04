@@ -1239,7 +1239,8 @@ EOF
 # --------------------------------------------------------------------------
 
 # Binds special block devices of the host on the target system. These
-# devices are required for chroot-ing into the target system.
+# devices are required for chroot-ing into the target system. Makes a
+# temporary directory available at the target system.
 #
 # Arguments:
 #   $TARGET      mount point of target file system
@@ -1251,6 +1252,9 @@ mount_devs() {
     mount --bind $D ${TARGET}${D}
   done
 
+  mkdir -p ${TARGET}/tmp
+  mount -t tmpfs tmpfs ${TARGET}/tmp
+  
   sleep 3   # wait until everything has settled
 }
 
