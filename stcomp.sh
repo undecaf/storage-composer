@@ -480,7 +480,8 @@ read_filepath() {
 # Arguments:
 #   $1           prompt
 #   $2           default value (optional)
-#   $3           allows entering multiple paths if present and non-empty (optional)
+#   $3           allows entering multiple paths (or no path) if present and non-empty 
+#                (optional)
 #   $4           verifies that directories exist if present and non-empty (optional)
 #   $BATCH_MODE  non-empty if running not interactively
 # Calls:
@@ -496,6 +497,8 @@ read_dirpaths() {
   until [ "$PATHS" ]; do
     read -erp "$1" -i "$DEFAULT"
 
+    [ -z "$REPLY" -a -n "$3" ] && break
+    
     I=0
     for P in $REPLY; do
       I=$(($I+1))
