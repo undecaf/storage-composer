@@ -2650,13 +2650,6 @@ if [ "$CLONE_GOAL" ]; then
 
   if ! chroot $TARGET /bin/bash -l <<- EOF
     set -e
-    export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true
-
-    # Purge packages related to the storage configuration of the source
-    apt-get -y -q purge \
-      {btrfs,nilfs,f2fs}-tools jfsutils reiserfsprogs xfsprogs ocfs2-* zfs-* \
-      bcache-tools cachefilesd \
-      mdadm lvm2 cryptsetup grub-pc os-prober
 
     # (Re-)Install only the required packages
     apt-get -y -q --reinstall --no-install-recommends install \
