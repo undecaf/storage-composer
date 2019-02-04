@@ -2045,12 +2045,6 @@ EOF
       SSH_SOCKET=
       SRC_PREAMBLE=eval
     fi
-
-    # Verify that a physical device is mounted at SRC_DIR
-    if [ $STATUS -eq 0 ] && ! $SRC_PREAMBLE "$SSH_SOCKET" $SRC_HOSTNAME \
-      "findmnt -n -l -o TARGET,SOURCE -R $SRC_DIR | grep -q -E $SRC_DIR'[[:space:]]+/dev/'"; then
-      error "No device mounted at source directory '$SRC_DIR'"
-    fi
   fi
 
   if [ "$ERROR" ]; then
