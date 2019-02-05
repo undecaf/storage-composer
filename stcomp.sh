@@ -914,13 +914,26 @@ devs_to_disks_by_uuid() {
 
 # --------------------------------------------------------------------------
 
-# Returns status 0 iff the specified block device is an SSD.
+# Returns status 0 iff the specified block device is a non-removable SSD.
 #
 # Arguments:
 #   $1  block device
 #
 is_ssd() {
   [ "$(lsblk -dnro RM,ROTA $1 2>/dev/null || true)" = '0 0' ]
+}
+
+
+# --------------------------------------------------------------------------
+
+# Returns status 0 iff the specified block device or any of its
+# holders supports trimming.
+#
+# Arguments:
+#   $1  block device
+#
+is_trimmable() {
+  [ "$(lsblk -dnro DISC-GRAN,DISC-MAX $1 2>/dev/null || true)" != '0B 0B' ]
 }
 
 
@@ -1164,7 +1177,7 @@ add_fstab() {
 #   $MP_REL_KEY_FILE mount point-relative path of <key file> in crypttab entry
 #   $KEY_ID          keyring ID of passphrase
 # Calls:
-#   devs_to_disks_by_uuid, is_ssd, contains_word
+#   devs_to_disks_by_uuid, is_trimmable, contains_word
 #
 
 # /etc/crypttab is being built here
@@ -1183,8 +1196,8 @@ format_luks() {
   # Add CRYPTTAB entry
   CRYPTTAB="$CRYPTTAB"$'\n'"$2 $(devs_to_disks_by_uuid $1) $ACTUAL_AUTH_METHOD:$MP_REL_KEY_FILE luks,initramfs,keyscript=$KEY_SCRIPT,noauto"
 
-  # Add a 'discard' option for SSDs
-  if is_ssd $1; then
+  # Add a 'discard' option if supported by this device or by any of its holders
+  if is_trimmable $1; then
     CRYPTTAB="$CRYPTTAB,discard"
   fi
 }
