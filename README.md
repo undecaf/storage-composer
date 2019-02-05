@@ -60,6 +60,8 @@ storage, caching and swapping, e.g. using `fdisk`, `gdisk`, `parted`,
 
 Those partitions do not need to have any file system type assigned, nor
 do they have to be formatted&nbsp;&ndash; StorageComposer will take care of that. 
+Consider [these comments](#ssd-trimming) when partitioning SSDs that are to be used
+for caching.
 
 ### Running StorageComposer
 StorageComposer must be run from a regular user account in `sudo` as `root`.
@@ -373,6 +375,16 @@ aware of these restrictions:
 - Target device names and UUIDs will be different from the source. This can break
   existing scripts. Files required for booting such as `/etc/fstab` etc. are
   adjusted by StorageComposer. 
+
+#### SSD trimming
+SSDs in a target system [built](#building-installing-and-cloning) by StorageComposer
+can be trimmed by [`fstrim`](http://manpages.ubuntu.com/manpages/bionic/en/man8/fstrim.8.html)
+even if they are holders of a RAID or an encrypted file system. Recent Ubuntu versions perform weekly batch trims by default (check `systemctl status fstrim.timer`)
+but disable realtime trimming for performance reasons 
+(see the `discard` option for [`mount`](http://manpages.ubuntu.com/manpages/bionic/en/man8/mount.8.html)).
+
+[bcache](https://bcache.evilpiepirate.org/) supports only realtime SSD trimming which
+impacts performance and is therefore disabled. Leaving some 20% of SSD capacity unprovisioned should allow the firmware to do sufficient wear-levelling in the background.
 
 ### Is it reliable? Testing
 Whenever a target is built (`-b`) or mounted (`-m)`, a script for testing
@@ -1194,7 +1206,7 @@ Credits go to the authors and contributors of these documents:
 
 1. Tridgell, Andrew; Mackerras, Paul et al.:
    [_rsync manpage_](http://manpages.ubuntu.com/manpages/bionic/en/man1/rsync.1.html).
-   Ubuntu Manpage Repository, 2014-06-22. Retrieved 2016-10-23.
+   Ubuntu 18.04 LTS Manpage Repository. Retrieved 2019-02-05.
 
 1. [_SSH_](https://help.ubuntu.com/community/SSH).
    Ubuntu Community Help Wiki, 2015-02-27. Retrieved 2016-10-28.
@@ -1249,7 +1261,7 @@ Credits go to the authors and contributors of these documents:
    
 1. Saout, Jana; Frühwirth, Clemens; Broz, Milan; Wagner, Arno:
    [_cryptsetup manpage_](http://manpages.ubuntu.com/manpages/bionic/man8/cryptsetup.8.html).
-   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-14.
+   Ubuntu 18.04 LTS Manpage Repository. Retrieved 2019-02-05.
    
 1. Ashley, Mike; Copeland, Matthew; Grahn, Joergen; Wheeler, David A.:
    [_The GNU Privacy Handbook: Encrypting and decrypting documents_](https://www.gnupg.org/gph/en/manual.html).
@@ -1260,7 +1272,11 @@ Credits go to the authors and contributors of these documents:
    
 1. Zak, Karel:
    [_mount manpage_](http://manpages.ubuntu.com/manpages/bionic/man8/mount.8.html).
-   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-22.
+   Ubuntu 18.04 LTS Manpage Repository. Retrieved 2019-02-05.
+   
+1. Czerner, Lukas; Zak, Karel:
+   [_fstrim manpage_](http://manpages.ubuntu.com/manpages/bionic/en/man8/fstrim.8.html).
+   Ubuntu 18.04 LTS Manpage Repository. Retrieved 2019-02-05.
    
 1. Axboe, Jens:
    [_fio HOWTO_](https://github.com/axboe/fio/blob/master/HOWTO).
@@ -1268,7 +1284,7 @@ Credits go to the authors and contributors of these documents:
 
 1. Carroll, Aaron; Axboe, Jens:
    [_fio manpage_](http://manpages.ubuntu.com/manpages/bionic/en/man1/fio.1.html).
-   Ubuntu Manpage Repository, 2016-04-21. Retrieved 2016-10-23.
+   Ubuntu 18.04 LTS Manpage Repository. Retrieved 2019-02-05.
    
 1. Schneier, Bruce:
    [_“Evil Maid” Attacks on Encrypted Hard Drives_](https://www.schneier.com/blog/archives/2009/10/evil_maid_attac.html).
